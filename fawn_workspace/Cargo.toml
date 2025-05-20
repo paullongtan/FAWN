@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = [ "fawn_backend", "fawn_client", "fawn_common","fawn_frontend"]

@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package fawn_api;
+
+service FawnService {
+    rpc Get (GetRequest) returns (GetResponse);
+    rpc Put (PutRequest) returns (PutResponse);
+}
+
+message GetRequest {
+    string key = 1;
+}
+
+message GetResponse {
+    string value = 1;
+    bool success = 2;
+}
+
+message PutRequest {
+    string key = 1;
+    string value = 2;
+}
+
+message PutResponse {
+    bool success = 1;
+}

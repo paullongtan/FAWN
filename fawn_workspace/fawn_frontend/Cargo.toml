@@ -1,0 +1,7 @@
+[package]
+name = "fawn_frontend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fawn_common = { path = "../fawn_common" }
