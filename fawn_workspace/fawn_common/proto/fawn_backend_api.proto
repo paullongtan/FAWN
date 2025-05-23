@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package fawn_backend_api;
+
+service FawnBackendService {
+    rpc Ping (PingRequest) returns (PingResponse);
+    rpc GetValue (GetRequest) returns (GetResponse);
+    rpc StoreValue (StoreRequest) returns (StoreResponse);
+    rpc UpdateSuccessor (UpdateSuccessorRequest) returns (UpdateSuccessorResponse);
+    rpc PrepareForSplit (PrepareForSplitRequest) returns (PrepareForSplitResponse);
+    rpc MigrateData (MigrateDataRequest) returns (MigrateDataResponse);
+}
+
+message NodeInfo {
+    string ip = 1;
+    uint32 port = 2;
+    uint32 id = 3;
+}
+
+message PingRequest {
+}
+
+message PingResponse {
+    NodeInfo node_info = 1;
+}
+
+message GetRequest {
+    string key_id = 1;
+}
+
+message GetResponse {
+    string value = 1;
+    bool success = 2;
+}
+
+message StoreRequest {
+    string key_id = 1;
+    string value = 2;
+}
+
+message StoreResponse {
+    bool success = 1;
+}
+
+message UpdateSuccessorRequest {
+    NodeInfo successor_info = 1;
+}
+
+message UpdateSuccessorResponse {
+    bool success = 1;
+}
+
+message PrepareForSplitRequest {
+    NodeInfo new_predecessor_info = 1;
+}
+
+message PrepareForSplitResponse {
+    bool success = 1;
+}
+
+message MigrateDataRequest {
+    NodeInfo new_predecessor_info = 1;
+}
+
+message MigrateDataResponse {
+    bool success = 1;
+}
