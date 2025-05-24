@@ -22,8 +22,6 @@ pub struct RequestJoinRingResponse {
     pub successor_info: ::core::option::Option<NodeInfo>,
     #[prost(message, optional, tag = "2")]
     pub predecessor_info: ::core::option::Option<NodeInfo>,
-    #[prost(message, optional, tag = "3")]
-    pub migrate_source_info: ::core::option::Option<NodeInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

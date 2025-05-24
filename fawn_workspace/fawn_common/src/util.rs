@@ -1,12 +1,5 @@
 use std::hash::{Hash, Hasher};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeInfo {
-    pub ip: String,
-    pub port: u32,
-    pub id: u32,
-}
-
 // Generate a node id from ip and port.
 // The node id is a 32-bit integer that is a hash of the ip and port.
 pub fn get_node_id(ip: &str, port: u32) -> u32 {

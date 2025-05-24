@@ -22,7 +22,6 @@ message RequestJoinRingRequest {
 message RequestJoinRingResponse {
     NodeInfo successor_info = 1;
     NodeInfo predecessor_info = 2;
-    NodeInfo migrate_source_info = 3;
 }
 
 message FinalizeJoinRingRequest {
