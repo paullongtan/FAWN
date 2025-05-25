@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 fawn_common = { path = "../fawn_common" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4.4", features = ["derive"] }
+rustyline = "10.0"
+async-trait = "0.1"
