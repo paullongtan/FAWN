@@ -8,3 +8,4 @@ memmap2 = "0.9.5"
 crc32fast = "1" # CRC-32C checksum
 sha2      = "0.10"    # SHA-256 for hash32
 byteorder = "1"       # handy LE helpers
+tempfile = "3"

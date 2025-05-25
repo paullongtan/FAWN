@@ -98,7 +98,7 @@ impl SegmentWriter {
 
         // check if we have this hash in the in-memory index
         let offset = if let Some(&off) = self.in_mem_idx.get(&hash) {
-            *off
+            off
         } else {
             return Ok(None); // not found
         };
@@ -112,11 +112,11 @@ impl SegmentWriter {
         let mut rec_buf = vec![0u8; rec_len];
         self.log_fd.read_exact_at(&mut rec_buf, offset as u64)?;
         
-        // decode the record and check key match (since we only store the hash32 of the key)
-        // doesn't try to find the next offset if a collision happens
-        // LIMIT: it only return the latest offset if a collision happens
-        // however, footer stores all (hash32, offset) pairs, so we can still find all records later.
-        let rec = Record::decode(&mut rec_buf[..])?;
+        // store the latest offset for each hash32
+        // if two different keys have the same hash32, the latest one overwrites the previous one
+        // however, this is not a problem because the latest record for a key determines its current state
+        // and all the records will be written to disk and indexed in the footer anyway
+        let rec = Record::decode(&mut &rec_buf[..])?;
         if rec.key == key {
             return Ok(Some(match rec.flags {
                 RecordFlags::Put => Some(rec.value.to_vec()),
@@ -156,13 +156,13 @@ impl SegmentWriter {
     }
 
     /// Finish the segment, return a read-only handle (mmap footer).
-    pub fn seal(self) -> io::Result<SegmentReader> {
+    pub fn seal(mut self) -> io::Result<SegmentReader> {
         self.flush_footer()?;
         drop(self.log_fd.sync_all()); // ensure log is synced before mmap
 
         // reopen read-only
         let log_ro = File::open(&self.meta.log_path)?;
-        SegmentReader::open_with_fd(sefl.meta, log_ro)
+        SegmentReader::open_with_fd(self.meta, log_ro)
     }
 
     pub fn bytes_written(&self) -> u32 {
@@ -193,7 +193,9 @@ impl SegmentReader {
     /// Binary-search footer → single `pread`.
     pub fn lookup(&self, hash: u32, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let slots = self.footer_mm.len() / 8; // each entry is 8 bytes (hash32 + offset32)
-        for i in 0..slots {
+
+        // scan the footer in reverse order (newest to oldest since the latest record for a key determines its current state)
+        for i in (0..slots).rev() {
             let slot = &self.footer_mm[i * 8..(i + 1) * 8];
 
             // read the hash32 and offset32 from the slot
@@ -211,7 +213,7 @@ impl SegmentReader {
             self.log_fd.read_exact_at(&mut rec_buf, offset as u64)?;
 
             // decode the record and check key match (it handles collision by checking all possible offsets for the hash)
-            let rec = Record::decode(&mut rec_buf[..])?;
+            let rec = Record::decode(&mut &rec_buf[..])?;
             if rec.key == key {
                 return Ok(match rec.flags {
                     RecordFlags::Put => Some(rec.value.to_vec()),
@@ -221,20 +223,72 @@ impl SegmentReader {
         }
         Ok(None) // not found
     }
+
+    /// Iterate over (hash32, offset32) pairs stored in the footer.
+    pub fn footer_pairs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.footer_mm
+            .chunks_exact(8)
+            .map(|slot| {
+                let h = u32::from_le_bytes(slot[0..4].try_into().unwrap());
+                let o = u32::from_le_bytes(slot[4..8].try_into().unwrap());
+                (h, o)
+            })
+    }
+
+    /// Read the raw bytes of one record at `off`.
+    pub fn read_record_bytes(&self, off: u32) -> io::Result<Vec<u8>> {
+        let mut len_buf = [0u8; 4];
+        self.log_fd.read_exact_at(&mut len_buf, off as u64)?;
+        let rec_len = u32::from_le_bytes(len_buf) as usize + 4;
+        let mut buf = vec![0u8; rec_len];
+        self.log_fd.read_exact_at(&mut buf, off as u64)?;
+        Ok(buf)
+    }
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
 
-/*
-let mut w = SegmentWriter::create("./data", 0, 4*1024*1024)?;
-w.append_put(b"foo", b"bar")?;
-assert_eq!(
-    w.lookup_in_mem(record::hash32(b"foo"), b"foo")?,
-    Some(Some(b"bar".to_vec()))
-);
-let r = w.seal()?;
-assert_eq!(
-    r.lookup(record::hash32(b"foo"), b"foo")?,
-    Some(b"bar".to_vec())
-);
-*/
+    #[test]
+    fn writer_reader_cycle() {
+        let dir = TempDir::new().unwrap();
+        println!("Temp dir: {:?}", dir);
+        let mut w = SegmentWriter::create(dir.path(), 0, 4 * 1024 * 1024).unwrap();
+
+        // Append some records
+        w.append_put(b"alpha", b"one").unwrap();
+        w.append_put(b"beta",  b"two").unwrap();
+        w.append_delete(b"alpha").unwrap();
+
+        // check in-memory lookup
+        assert_eq!(
+            w.lookup_in_mem(record::hash32(b"beta"), b"beta").unwrap(),
+            Some(Some(b"two".to_vec())) // found a put
+        );
+
+        assert_eq!(
+            w.lookup_in_mem(record::hash32(b"alpha"), b"alpha").unwrap(),
+            Some(None) // found a delete (tombstone)
+        );
+
+        println!("passed in-mem lookup");
+
+        // Seal the segment
+        let rdr = w.seal().unwrap();
+
+        // reader sees tombstone & live
+        assert!(
+            rdr.lookup(record::hash32(b"alpha"), b"alpha")
+            .unwrap()
+            .is_none()
+        );
+
+        assert_eq!(
+            rdr.lookup(record::hash32(b"beta"), b"beta").unwrap(),
+            Some(b"two".to_vec()) // found a put
+        );
+    }
+}

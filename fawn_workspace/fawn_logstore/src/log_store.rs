@@ -3,11 +3,11 @@ TODO:
 - Compaction work not implemented yet. (placeholder only)
 */
 
-use crate::segment::{SegmentWriter, SegmentReader};
+use crate::segment::{SegmentInfo, SegmentWriter, SegmentReader};
 use std::{
     fs, 
     io, 
-    path::{Path, PathBuf}, 
+    path::PathBuf, 
     sync::Mutex, 
     time::{Duration, Instant}
 };
@@ -46,7 +46,7 @@ impl LogStructuredStore {
         // open existing segments
         let mut sealed_readers = Vec::new(); 
         for &id in &ids {
-            let meta = segment::SegmentInfo::new(&dir, id);
+            let meta = SegmentInfo::new(&dir, id);
             let reader = SegmentReader::open(meta)?;
             sealed_readers.push(reader);
         }
@@ -122,15 +122,18 @@ impl LogStructuredStore {
     // This is a placeholder; actual compaction logic is not implemented yet.
     pub fn compact(&self) -> io::Result<()> { Ok(()) }
 
-    fn roll_segment(self, old: &mut SegmentWriter) -> io::Result<()> {
-        // seal old writer -> reader
-        let reader = old.seal()?;
+    fn roll_segment(&self, old: &mut SegmentWriter) -> io::Result<()> {
+        // create the replacement before invalidating the old one
+        let next_id = old.meta.id + 1;
+        let new_writer = SegmentWriter::create(&self.dir, next_id, self.max_seg_size)?;
+
+        // move the current writer out of the mutex slot
+        let old_writer = std::mem::replace(old, new_writer);
+
+        // seal the moved-out writer, push its reader
+        let reader = old_writer.seal()?;
         self.sealed.lock().unwrap().insert(0, reader); // insert at the front (newest first)
 
-        // create a new writer
-        let next_id = old.meta.id + 1;
-        *old = SegmentWriter::create(&self.dir, next_id, self.max_seg_size)?;
-        
         Ok(())
     }
 
@@ -152,36 +155,85 @@ impl LogStructuredStore {
         lo: u32,
         hi: u32,
     ) -> io::Result<impl Iterator<Item = (Vec<u8>, Vec<u8>)>> {
-        
-        // seal the active writer first for a consistent view
-        let mut writer = self.active.lock().unwrap();
-        writer.flush_footer()?;
-        drop(writer); // release the lock
+        // flush active footer so view is consistent
+        // wrapped to limit the lifetime of the lock
+        {
+            let mut w = self.active.lock().unwrap();
+            w.flush_footer()?;
+        }
 
-        let sealed = self.sealed.lock().unwrap().clone();
-        Ok(sealed.into_iter().flat_map(move |seg| {
-            // naive full-scan iterator; optimize later
-            (0..seg.footer_mm.len() / 8).filter_map(move |i| {
-                let slot = &seg.footer_mm[i * 8..(i + 1) * 8];
-                let hash = u32::from_le_bytes(slot[0..4].try_into().unwrap());
-                if hash < lo || hash >= hi {
-                    return None; // out of range
-                }
-                let offset = u32::from_le_bytes(slot[4..8].try_into().unwrap());
-                
-                // read the record at this offset
-                let mut len_buf = [0u8; 4];
-                seg.log_fd.read_exact_at(&mut len_buf, offset as u64).ok()?;
-                let rec_len = u32::from_le_bytes(len_buf) as usize + 4; // +4 for the length itself
-                let mut rec_buf = vec![0u8; rec_len];
-                seg.log_fd.read_exact_at(&mut rec_buf, offset as u64).ok()?;
+        // collect matching pairs into a Vec while we hold the lock
+        let mut items = Vec::<(Vec<u8>, Vec<u8>)>::new();
+        let sealed = self.sealed.lock().unwrap();
 
-                // decode the record
-                match crate::record::Record::decode(&mut rec_buf[..]) {
-                    Ok(rec) => Some((rec.key.to_vec(), rec.value.to_vec())),
-                    Err(_) => None, // skip corrupted records
+        for seg in sealed.iter() {
+            for (h, off) in seg.footer_pairs() {
+                if !(lo < h && h <= hi) { continue; }
+
+                let buf = seg.read_record_bytes(off)?;
+                let rec = crate::record::Record::decode(&mut &buf[..])?;
+
+                if rec.flags == crate::record::RecordFlags::Put {
+                    items.push((rec.key.to_vec(), rec.value.to_vec()));
                 }
-            })
-        }))
+            }
+        }
+
+        // return an iterator that owns the Vec (lock already released)
+        Ok(items.into_iter())
+    }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_log_store_basic() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let store = LogStructuredStore::open(temp_dir.path())?;
+
+        // put some records
+        store.put(b"key1".to_vec(), b"value1".to_vec())?;
+        store.put(b"key2".to_vec(), b"value2".to_vec())?;
+        store.put(b"key3".to_vec(), b"value3".to_vec())?;
+
+        // get records
+        assert_eq!(store.get(b"key1")?, Some(b"value1".to_vec()));
+        assert_eq!(store.get(b"key2")?, Some(b"value2".to_vec()));
+        assert_eq!(store.get(b"key3")?, Some(b"value3".to_vec()));
+        assert_eq!(store.get(b"key4")?, None); // not found
+
+        // delete a record
+        store.delete(b"key2")?;
+        assert_eq!(store.get(b"key2")?, None); // should be deleted
+
+        Ok(())
+    }
+
+    #[test]
+    fn store_basic_put_get_roll() {
+        let dir = TempDir::new().unwrap();
+        let store = LogStructuredStore::open(dir.path()).unwrap();
+
+        // tiny max size to force roll
+        store.put(b"K1".to_vec(), vec![0; 1024]).unwrap(); // 1 KiB
+        store.put(b"K2".to_vec(), vec![0; 1024]).unwrap();
+
+        // retrieve
+        assert!(store.get(b"K1").unwrap().is_some());
+
+        // flush & drop
+        store.flush().unwrap();
+        drop(store);
+
+        // reopen -> data still there
+        let reopened = LogStructuredStore::open(dir.path()).unwrap();
+        assert!(reopened.get(b"K2").unwrap().is_some());
+        reopened.delete(b"K2").unwrap();
+        assert!(reopened.get(b"K2").unwrap().is_none());
     }
 }

@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 pub const FIXED_HDR: usize = 4 + 2 + 1 + 1 + 4; // rec_len + key_len + flags + reserved + key_hash32
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RecordFlags {
     Put     = 0x01,  // mark the record as a key-value pair (an insertion or update)
     Delete  = 0x02,  // mark the record as a tombstone (a deletion)
@@ -115,4 +115,36 @@ pub fn hash32(key: &[u8]) -> u32 {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(key);
     u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]])
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_roundtrip() {
+        let rec = Record {
+            flags: RecordFlags::Put,
+            key: b"foo", 
+            value: b"bar",
+            hash32: hash32(b"foo"),
+        };
+
+        // encode
+        let mut buf = Vec::new();
+        rec.encode(&mut buf).unwrap();
+        assert_eq!(buf.len(), 4 + 2 + 1 + 1 + 4 + rec.key.len() + rec.value.len() + 4); // rec_len + key_len + flags + hash32 + key + value + crc32
+
+        // decode
+        let dec = Record::decode(&mut &buf[..]).unwrap();
+        assert_eq!(dec.flags, RecordFlags::Put);
+        assert_eq!(dec.key, b"foo");
+        assert_eq!(dec.value, b"bar");
+        assert_eq!(dec.hash32, hash32(b"foo"));
+
+        // flip one byte -> CRC must fail
+        buf[10] ^= 0xFF; // flip a byte in the value
+        assert!(Record::decode(&mut &buf[..]).is_err());
+    }
 }
