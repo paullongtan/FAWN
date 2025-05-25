@@ -31,17 +31,74 @@ impl ChunkedFileStore {
 
     /// Upload a file from disk
     pub fn put_file(&self, file_id: &str, path: &Path) -> Result<()> {
-        todo!()
+        let mut file = File::open(path)?;
+        let mut buffer = vec![0u8; CHUNK_SIZE];
+        let mut hasher = sha2::Sha256::new();
+        let mut total = 0_u64;
+        let mut idx = 0_u32;
+
+        loop {
+            let bytes_read = file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break; // EOF
+            }
+            hasher.update(&buffer[..bytes_read]);
+            total += bytes_read as u64;
+
+            let chunk_key = format!("{file_id}:{:08X}", idx);
+            self.store.put(chunk_key.into_bytes(), buffer[..bytes_read].to_vec())?;
+            idx += 1;
+        }
+
+        // wrtie manifest last so orphand chunks are harmless on crash
+        let manifest = Manifest {
+            chunk_cnt: idx,
+            file_size: total,
+            sha256: hasher.finalize().into(),
+        };
+        let meta_key = format!("{file_id}:meta");
+        self.store.put(meta_key.into_bytes(), serde_json::to_vec(&manifest)?)?;
+        
+        Ok(())
     }
 
     /// Re-assemble the file into output path
     pub fn get_file(&self, file_id: &str, output_path: &Path) -> Result<()> {
-        todo!()
+        // fetch manifest first
+        let meta_key = format!("{file_id}:meta");
+        let meta_val = self
+            .store
+            .get(meta_key.as_bytes())?
+            .ok_or_else(|| anyhow!("file not found"))?;
+        let manifest: Manifest = serde_json::from_slice(&meta_val)?;
+
+        let mut out = File::create(output_path)?;
+        let mut hasher = sha2::Sha256::new();
+
+        // fetch each chunk and write to output
+        for idx in 0..manifest.chunk_cnt {
+            let chunk_key = format!("{file_id}:{:08X}", idx);
+            let chunk = self
+                .store
+                .get(chunk_key.as_bytes())?
+                .ok_or_else(|| anyhow!("chunk {idx} not found"))?;
+            hasher.update(&chunk);
+            out.write_all(&chunk)?;
+        }
+
+        // verify the SHA-256 hash
+        if hasher.finalize() != manifest.sha256 {
+            return Err(anyhow::anyhow!("SHA-256 mismatch — data corrupted {file_id}"));
+        }
+
+        Ok(())
     }
 
     /// Delete a file by its ID
     /// Tombstone manifest first; chunks are dropped during compaction.
     pub fn delete_file(&self, file_id: &str) -> Result<()> {
-        todo!()
+        let meta_key = format!("{file_id}:meta");
+        self.store.delete(meta_key.as_bytes())?;
+        Ok(())
     }
 }
