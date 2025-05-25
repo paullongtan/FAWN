@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 fawn_common = { path = "../fawn_common" }
+fawn_logstore = { path = "../fawn_logstore" }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
 anyhow        = "1"
+tempfile = "3"
+sha2     = "0.10"   # only for ChunkedFileStore test

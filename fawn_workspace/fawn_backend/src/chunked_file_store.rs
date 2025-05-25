@@ -5,8 +5,9 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
-use fawn_logstore::LogStructuredStore;
+use sha2::Digest;
+use anyhow::{anyhow, Result};
+use fawn_logstore::log_store::LogStructuredStore;
 use serde::{Deserialize, Serialize};
 
 const CHUNK_SIZE: usize = 256 * 1024; // 256 KiB "record" size
@@ -87,7 +88,7 @@ impl ChunkedFileStore {
         }
 
         // verify the SHA-256 hash
-        if hasher.finalize() != manifest.sha256 {
+        if hasher.finalize() != manifest.sha256.into() {
             return Err(anyhow::anyhow!("SHA-256 mismatch — data corrupted {file_id}"));
         }
 
