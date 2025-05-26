@@ -1,17 +1,11 @@
 /*
 TODO: 
-- reuse the latest segment if it is not full, instead of always rolling.
 - Compaction work not implemented yet. (placeholder only)
 */
 
 use crate::segment::{SegmentInfo, SegmentWriter, SegmentReader};
 use std::{
-    fs, 
-    io::{self, Write}, 
-    path::PathBuf, 
-    sync::Mutex, 
-    time::{Duration, Instant}, 
-    os::unix::fs::FileExt
+    fs, io::{self, Write}, os::unix::fs::FileExt, path::PathBuf, sync::{Mutex, RwLock}, time::{Duration, Instant}
 };
 
 const FLUSH_EVERY: Duration = Duration::from_secs(5); // flush every 5 seconds
@@ -19,10 +13,10 @@ const MAX_SEG_SIZE: u32 = 4 * 1024 * 1024; // 4 MiB max segment size
 
 pub struct LogStructuredStore {
     dir:           PathBuf,
-    active:        Mutex<SegmentWriter>,
-    sealed:        Mutex<Vec<SegmentReader>>, // sorted by id descending (newest first)
+    active:        Mutex<SegmentWriter>, // use Mutex to ensure only one thread writes at a time
+    sealed:        RwLock<Vec<SegmentReader>>, // sorted by id descending (newest first) (use RwLock to allow concurrent reads) (write lock for rolling)
     max_seg_size:  u32,
-    last_flush:    Mutex<Instant>,
+    last_flush:    Mutex<Instant>, // last time we flushed the active segment's footer  
 }
 
 /// Rebuild the footer for a segment by reading the log file and writing the footer file.
@@ -135,7 +129,7 @@ impl LogStructuredStore {
         Ok(Self {
             dir,
             active: Mutex::new(writer),
-            sealed: Mutex::new(sealed_readers),
+            sealed: RwLock::new(sealed_readers),
             max_seg_size: MAX_SEG_SIZE,
             last_flush: Mutex::new(Instant::now()),
         })
@@ -180,7 +174,7 @@ impl LogStructuredStore {
         }
 
         // then search in the sealed segments from newest to oldest
-        for reader in self.sealed.lock().unwrap().iter() {
+        for reader in self.sealed.read().unwrap().iter() {
             if let Some(value) = reader.lookup(hash, key)? {
                 return Ok(Some(value));
             }
@@ -208,8 +202,9 @@ impl LogStructuredStore {
         let old_writer = std::mem::replace(old, new_writer);
 
         // seal the moved-out writer, push its reader
+        // use write lock to ensure no concurrent reads while sealing
         let reader = old_writer.seal()?;
-        self.sealed.lock().unwrap().insert(0, reader); // insert at the front (newest first)
+        self.sealed.write().unwrap().insert(0, reader); // insert at the front (newest first)
 
         Ok(())
     }
@@ -241,7 +236,7 @@ impl LogStructuredStore {
 
         // collect matching pairs into a Vec while we hold the lock
         let mut items = Vec::<(Vec<u8>, Vec<u8>)>::new();
-        let sealed = self.sealed.lock().unwrap();
+        let sealed = self.sealed.read().unwrap();
 
         for seg in sealed.iter() {
             for (h, off) in seg.footer_pairs() {
@@ -378,5 +373,54 @@ mod tests {
             .filter(|e| e.as_ref().unwrap().file_name().to_str().unwrap().ends_with(".log"))
             .count();
         assert_eq!(log_count, 1, "Should only be one segment log file");
+    }
+
+    #[test]
+    fn test_concurrent_write_and_read() {
+        use std::sync::Arc; // Arc for shared ownership
+        use std::thread;
+        use std::time::Duration;
+
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(LogStructuredStore::open(dir.path()).unwrap());
+
+        // Spawn writer threads
+        let writers: Vec<_> = (0..4).map(|i| {
+            let store = store.clone();
+            thread::spawn(move || {
+                for j in 0..100 {
+                    let key = format!("key{}_{}", i, j).into_bytes();
+                    let val = vec![i as u8, j as u8];
+                    store.put(key, val).unwrap();
+                }
+            })
+        }).collect();
+
+        // Spawn reader threads
+        let readers: Vec<_> = (0..4).map(|i| {
+            let store = store.clone();
+            thread::spawn(move || {
+                for j in 0..100 {
+                    let key = format!("key{}_{}", i, j).into_bytes();
+                    // Try to read, may be None if not written yet
+                    let _ = store.get(&key);
+                    // Optionally sleep to increase interleaving
+                    thread::sleep(Duration::from_millis(1));
+                }
+            })
+        }).collect();
+
+        // Wait for all threads to finish
+        for w in writers { w.join().unwrap(); }
+        for r in readers { r.join().unwrap(); }
+
+        // Verify some data
+        for i in 0..4 {
+            for j in 0..100 {
+                let key = format!("key{}_{}", i, j).into_bytes();
+                let val = vec![i as u8, j as u8];
+                assert_eq!(store.get(&key).unwrap(), Some(val));
+            }
+        }
     }
 }
