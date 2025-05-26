@@ -68,6 +68,10 @@ fn rebuild_footer(meta: &crate::segment::SegmentInfo) -> io::Result<()> {
     ftr.sync_all()
 }
 
+/// Convert a 32-bit hash to a 4-byte array in little-endian order.
+#[inline]
+fn key_bytes(id: u32) -> [u8; 4] { id.to_le_bytes() }
+
 impl LogStructuredStore {
     /// Open (or create) a store in `dir`.
     pub fn open<P: AsRef<std::path::Path>>(dir: P) -> io::Result<Self> {
@@ -150,6 +154,12 @@ impl LogStructuredStore {
         self.check_periodic_flush(&mut *writer)
     }
 
+    /// Store a key that is already the 32-bit hash.
+    pub fn put_hashed(&self, hashed_key: u32, value: Vec<u8>) -> io::Result<()> {
+        // convert the u32 hashed key into bytes array as the 4-byte representation of the key
+        self.put(key_bytes(hashed_key).to_vec(), value)
+    }
+
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
         let len_needed = crate::record::FIXED_HDR + key.len() + 4; // 4 for CRC32
         let mut writer = self.active.lock().unwrap();
@@ -163,6 +173,10 @@ impl LogStructuredStore {
         writer.append_delete(key)?;
 
         self.check_periodic_flush(&mut *writer)
+    }
+
+    pub fn delete_hashed(&self, hashed_key: u32) -> io::Result<()> {
+        self.delete(&key_bytes(hashed_key))
     }
 
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
@@ -182,6 +196,10 @@ impl LogStructuredStore {
 
         // not found
         Ok(None)
+    }
+
+    pub fn get_hashed(&self, hashed_key: u32) -> io::Result<Option<Vec<u8>>> {
+        self.get(&key_bytes(hashed_key))
     }
 
     // Flush the active segment writer's footer to disk.
@@ -222,6 +240,7 @@ impl LogStructuredStore {
     /// The range is exclusive of `lo` and inclusive of `hi`. (lo, hi]
     /// This function is for migration
     /// It returns an iterator over `(key, value)` pair that matches the range.
+    /// the lo and hi expect the upper 32 bits of the SHA-256 hash of the key.
     pub fn iter_range(
         &self,
         lo: u32,
@@ -422,5 +441,32 @@ mod tests {
                 assert_eq!(store.get(&key).unwrap(), Some(val));
             }
         }
+    }
+
+    #[test]
+    fn test_put_hashed_get_hashed() {
+        let dir = TempDir::new().unwrap();
+        let store = LogStructuredStore::open(dir.path()).unwrap();
+
+        // Use a u32 hash as the key
+        let hashed_key: u32 = 0x12345678;
+        let value = b"hashed_value".to_vec();
+
+        // Put the record using the hashed key
+        store.put_hashed(hashed_key, value.clone()).unwrap();
+
+        // Get the record using the hashed key
+        let retrieved = store.get_hashed(hashed_key).unwrap();
+        assert_eq!(retrieved, Some(value.clone()), "Retrieved value should match the put value");
+
+        // Overwrite with a new value
+        let new_value = b"new_hashed_value".to_vec();
+        store.put_hashed(hashed_key, new_value.clone()).unwrap();
+        let retrieved_2 = store.get_hashed(hashed_key).unwrap();
+        assert_eq!(retrieved_2, Some(new_value), "Retrieved value should match the new put value");
+
+        // Delete the record
+        store.delete_hashed(hashed_key).unwrap();
+        assert_eq!(store.get_hashed(hashed_key).unwrap(), None);
     }
 }
