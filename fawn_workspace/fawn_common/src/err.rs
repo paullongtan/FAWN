@@ -9,6 +9,8 @@ pub enum FawnError {
     // RPC errors
     RpcError(String),
 
+    // System errors
+    NoBackendAvailable(String),
     KeyNotFound(String),
     SystemError(String),
     Unknown(String),
@@ -24,6 +26,7 @@ impl Display for FawnError {
             FawnError::RpcError(x) => format!("rpc error: {}", x),
             FawnError::SystemError(x) => format!("system error: {}", x),
             FawnError::Unknown(x) => format!("unknown error: {}", x),
+            FawnError::NoBackendAvailable(x) => format!("no backend available: {}", x),
         };
         write!(f, "{}", x)
     }
@@ -31,6 +34,10 @@ impl Display for FawnError {
 
 // Implement Error trait
 impl std::error::Error for FawnError {}
+
+// Add these implementations
+unsafe impl Send for FawnError {}
+unsafe impl Sync for FawnError {}
 
 // Implement From for common error types
 impl From<tonic::Status> for FawnError {

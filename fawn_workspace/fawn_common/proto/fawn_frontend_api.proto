@@ -5,6 +5,8 @@ package fawn_frontend_api;
 service FawnFrontendService {
     rpc RequestJoinRing (RequestJoinRingRequest) returns (RequestJoinRingResponse);
     rpc FinalizeJoinRing (FinalizeJoinRingRequest) returns (FinalizeJoinRingResponse);
+    rpc NotifyBackendJoin(NotifyBackendJoinRequest) returns (NotifyBackendJoinResponse);
+    rpc NotifyBackendLeave(NotifyBackendLeaveRequest) returns (NotifyBackendLeaveResponse);
     rpc GetValue (GetRequest) returns (GetResponse);
     rpc PutValue (PutRequest) returns (PutResponse);
 }
@@ -33,6 +35,19 @@ message FinalizeJoinRingResponse {
     bool join_ring_success = 1;
 }
 
+message NotifyBackendJoinRequest {
+    NodeInfo backend_info = 1;
+}
+message NotifyBackendJoinResponse {
+    bool success = 1;
+}
+
+message NotifyBackendLeaveRequest {
+    NodeInfo backend_info = 1;
+}
+message NotifyBackendLeaveResponse {
+    bool success = 1;
+}
 
 message GetRequest {
     string user_key = 1;

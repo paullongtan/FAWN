@@ -1,4 +1,5 @@
 use std::hash::{Hash, Hasher};
+use crate::types::NodeInfo;
 
 // Generate a node id from ip and port.
 // The node id is a 32-bit integer that is a hash of the ip and port.

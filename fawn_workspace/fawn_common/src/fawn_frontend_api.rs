@@ -39,6 +39,30 @@ pub struct FinalizeJoinRingResponse {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NotifyBackendJoinRequest {
+    #[prost(message, optional, tag = "1")]
+    pub backend_info: ::core::option::Option<NodeInfo>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NotifyBackendJoinResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NotifyBackendLeaveRequest {
+    #[prost(message, optional, tag = "1")]
+    pub backend_info: ::core::option::Option<NodeInfo>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NotifyBackendLeaveResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRequest {
     #[prost(string, tag = "1")]
     pub user_key: ::prost::alloc::string::String,
@@ -210,6 +234,66 @@ pub mod fawn_frontend_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn notify_backend_join(
+            &mut self,
+            request: impl tonic::IntoRequest<super::NotifyBackendJoinRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::NotifyBackendJoinResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/fawn_frontend_api.FawnFrontendService/NotifyBackendJoin",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "fawn_frontend_api.FawnFrontendService",
+                        "NotifyBackendJoin",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn notify_backend_leave(
+            &mut self,
+            request: impl tonic::IntoRequest<super::NotifyBackendLeaveRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::NotifyBackendLeaveResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/fawn_frontend_api.FawnFrontendService/NotifyBackendLeave",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "fawn_frontend_api.FawnFrontendService",
+                        "NotifyBackendLeave",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn get_value(
             &mut self,
             request: impl tonic::IntoRequest<super::GetRequest>,
@@ -279,6 +363,20 @@ pub mod fawn_frontend_service_server {
             request: tonic::Request<super::FinalizeJoinRingRequest>,
         ) -> std::result::Result<
             tonic::Response<super::FinalizeJoinRingResponse>,
+            tonic::Status,
+        >;
+        async fn notify_backend_join(
+            &self,
+            request: tonic::Request<super::NotifyBackendJoinRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::NotifyBackendJoinResponse>,
+            tonic::Status,
+        >;
+        async fn notify_backend_leave(
+            &self,
+            request: tonic::Request<super::NotifyBackendLeaveRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::NotifyBackendLeaveResponse>,
             tonic::Status,
         >;
         async fn get_value(
@@ -454,6 +552,106 @@ pub mod fawn_frontend_service_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = FinalizeJoinRingSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/fawn_frontend_api.FawnFrontendService/NotifyBackendJoin" => {
+                    #[allow(non_camel_case_types)]
+                    struct NotifyBackendJoinSvc<T: FawnFrontendService>(pub Arc<T>);
+                    impl<
+                        T: FawnFrontendService,
+                    > tonic::server::UnaryService<super::NotifyBackendJoinRequest>
+                    for NotifyBackendJoinSvc<T> {
+                        type Response = super::NotifyBackendJoinResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::NotifyBackendJoinRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as FawnFrontendService>::notify_backend_join(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = NotifyBackendJoinSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/fawn_frontend_api.FawnFrontendService/NotifyBackendLeave" => {
+                    #[allow(non_camel_case_types)]
+                    struct NotifyBackendLeaveSvc<T: FawnFrontendService>(pub Arc<T>);
+                    impl<
+                        T: FawnFrontendService,
+                    > tonic::server::UnaryService<super::NotifyBackendLeaveRequest>
+                    for NotifyBackendLeaveSvc<T> {
+                        type Response = super::NotifyBackendLeaveResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::NotifyBackendLeaveRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as FawnFrontendService>::notify_backend_leave(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = NotifyBackendLeaveSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
