@@ -217,7 +217,7 @@ impl FrontendNode {
     }
 
 
-    async fn set_ready(&self, ready: bool) {
+    fn set_ready(&self, ready: bool) {
         self.state.ready.store(ready, Ordering::Relaxed);
     }
 
@@ -270,7 +270,6 @@ impl FawnFrontendService for FawnFrontend {
             return Ok(response);
         }
 
-
         let (successor, predecessor) = handle_request_join_ring(self.state.backend_manager.clone(), request_node)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -309,22 +308,16 @@ impl FawnFrontendService for FawnFrontend {
             return Ok(response);
         }
 
-        let join_ring_success = handle_finalize_join_ring(self.state.backend_manager.clone(), request_node.clone(), migrate_success)
+        let join_ring_success = handle_finalize_join_ring(
+            self.state.backend_manager.clone(), 
+            request_node.clone(), 
+            migrate_success,
+            &self.state.fronts,
+            self.state.this
+        )
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
-
-        // notify other frontends of the new node's node info to update their backend list
-        for i in 0..self.state.fronts.len() {
-            if i != self.state.this {
-                let addr = SystemState::get_peer_addr(&self.state.fronts[i]);
-                let mut client = FawnFrontendServiceClient::connect(addr).await.map_err(|e| Status::internal(e.to_string()))?;
-                let request = tonic::Request::new(NotifyBackendJoinRequest {backend_info: Some(request_node.clone().into())});
-                let response = client.notify_backend_join(request).await.map_err(|e| Status::internal(e.to_string()))?;
-                if !response.get_ref().success {
-                    return Err(Status::internal("Failed to notify other frontends"));
-                }
-            }
-        }
+        
         Ok(Response::new(FinalizeJoinRingResponse {
             join_ring_success,
         }))

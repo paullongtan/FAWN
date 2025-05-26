@@ -16,6 +16,10 @@ impl NodeInfo {
     pub fn new(ip: String, port: u32, id: u32) -> NodeInfo {
         NodeInfo { ip, port, id }
     }
+
+    pub fn get_addr(&self) -> String {
+        format!("http://{}:{}", self.ip, self.port)
+    }
 }
 
 impl From<crate::fawn_frontend_api::NodeInfo> for NodeInfo {
@@ -31,6 +35,26 @@ impl From<crate::fawn_frontend_api::NodeInfo> for NodeInfo {
 impl From<NodeInfo> for crate::fawn_frontend_api::NodeInfo {
     fn from(domain: NodeInfo) -> Self {
         crate::fawn_frontend_api::NodeInfo {
+            ip: domain.ip,
+            port: domain.port,
+            id: domain.id,
+        }
+    }
+}
+
+impl From<crate::fawn_backend_api::NodeInfo> for NodeInfo {
+    fn from(proto: crate::fawn_backend_api::NodeInfo) -> Self {
+        NodeInfo {
+            ip: proto.ip,
+            port: proto.port,
+            id: proto.id,
+        }
+    }
+}
+
+impl From<NodeInfo> for crate::fawn_backend_api::NodeInfo {
+    fn from(domain: NodeInfo) -> Self {
+        crate::fawn_backend_api::NodeInfo {
             ip: domain.ip,
             port: domain.port,
             id: domain.id,

@@ -49,7 +49,6 @@ message NotifyBackendLeaveResponse {
     bool success = 1;
 }
 
-
 message GetRequest {
     string user_key = 1;
 }
