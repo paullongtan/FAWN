@@ -55,14 +55,6 @@ impl SystemState {
         })
     }
 
-    pub fn get_peer_addr(node: &NodeInfo) -> String {
-        // Remove any existing protocol prefix
-        let clean_ip = node.ip.trim_start_matches("http://").trim_start_matches("https://");
-        
-        // Always use http:// for internal communication
-        format!("http://{}:{}", clean_ip, node.port)
-    }
-
     pub async fn get_responsible_frontend(&self, key_id: u32) -> FawnResult<NodeInfo> {
         // each frontend is responsible for a range of backend ids
         // the range is (frontend's predecessor's id, frontend's id]
@@ -124,6 +116,7 @@ impl FrontendNode {
     }
 
     pub async fn start(&mut self) -> FawnResult<()> {
+        println!("Starting frontend node");
         let node_info = &self.state.fronts[self.state.this];
         // For server binding, we need just the IP:PORT format
         let addr = format!("{}:{}", node_info.ip, node_info.port)
@@ -151,8 +144,13 @@ impl FrontendNode {
                 println!("Shutting down server...");
             });
 
+        // Start server in a separate task
+        let server_handle = tokio::spawn(async move {
+            println!("Server starting on {}", addr);
+            server.await
+        });
 
-        // Check if server is actually bound by attempting to connect
+        // Wait for server to be bound
         let mut is_bound = false;
         for _ in 0..300 {
             // Try for up to 30 seconds
@@ -171,6 +169,8 @@ impl FrontendNode {
             return Err(Box::new(FawnError::SystemError("Server failed to bind".to_string())));
         }
 
+        println!("Server is bound and ready");
+
         // Ping all other frontends, wait until all frontends are ready
         let all_frontends_ready = self.check_frontend_ready().await?;
         if !all_frontends_ready {
@@ -181,7 +181,8 @@ impl FrontendNode {
         // set SystemState ready to true to start serving requests
         self.set_ready(true);
 
-        server.await.map_err(|e| FawnError::SystemError(e.to_string()))?;
+        // Wait for server to complete
+        server_handle.await.map_err(|e| FawnError::SystemError(e.to_string()))??;
         
         Ok(())
     }
@@ -193,16 +194,16 @@ impl FrontendNode {
             for i in 0..self.state.fronts.len() {
                 if i != self.state.this {
                     // For client connections, we need the full URL with protocol
-                    let addr = SystemState::get_peer_addr(&self.state.fronts[i]);
+                    let addr = self.state.fronts[i].get_http_addr();
                     let connect_result = timeout(
                         Duration::from_millis(300), 
                         FawnFrontendServiceClient::connect(addr)
                     ).await;
                     match connect_result {
-                        Ok(_client) => {
+                        Ok(Ok(_)) => {
                             continue;
                         }
-                        Err(_) => {
+                        Ok(Err(_)) | Err(_) => {
                             all_frontends_ready = false;
                             break;
                         }
@@ -210,7 +211,8 @@ impl FrontendNode {
                 }
             }
             if !all_frontends_ready {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                println!("Frontends are not ready, waiting for 1 second");
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
         }
         Ok(all_frontends_ready)
@@ -263,7 +265,7 @@ impl FawnFrontendService for FawnFrontend {
 
         // if we are not responsible frontend for the backend joining the ring, forward the request to the responsible frontend
         if responsible_frontend.id != self.state.fronts[self.state.this].id {
-            let addr = SystemState::get_peer_addr(&responsible_frontend);
+            let addr = responsible_frontend.get_http_addr();
             let mut client = FawnFrontendServiceClient::connect(addr).await.map_err(|e| Status::internal(e.to_string()))?;
             let request = tonic::Request::new(RequestJoinRingRequest {node_info: Some(request_node.clone().into())});
             let response = client.request_join_ring(request).await.map_err(|e| Status::internal(e.to_string()))?;
@@ -301,7 +303,7 @@ impl FawnFrontendService for FawnFrontend {
 
         // if we are not responsible frontend for the backend joining the ring, forward the request to the responsible frontend
         if responsible_frontend.id != self.state.fronts[self.state.this].id {
-            let addr = SystemState::get_peer_addr(&responsible_frontend);
+            let addr = responsible_frontend.get_http_addr();
             let mut client = FawnFrontendServiceClient::connect(addr).await.map_err(|e| Status::internal(e.to_string()))?;
             let request = tonic::Request::new(FinalizeJoinRingRequest {node_info: Some(request_node.clone().into()), migrate_success: migrate_success});
             let response = client.finalize_join_ring(request).await.map_err(|e| Status::internal(e.to_string()))?;
@@ -339,7 +341,7 @@ impl FawnFrontendService for FawnFrontend {
             Ok(responsible_frontend) => {
                 // if we are not responsible frontend for the key, forward the request to the responsible frontend
                 if responsible_frontend.id != self.state.fronts[self.state.this].id {
-                    let addr = SystemState::get_peer_addr(&responsible_frontend);
+                    let addr = responsible_frontend.get_http_addr();
                     let mut client = FawnFrontendServiceClient::connect(addr).await.map_err(|e| Status::internal(e.to_string()))?;
                     let request = tonic::Request::new(GetRequest {user_key: user_key});
                     let response = client.get_value(request).await.map_err(|e| Status::internal(e.to_string()))?;
@@ -376,7 +378,7 @@ impl FawnFrontendService for FawnFrontend {
             Ok(responsible_frontend) => {
                 // if we are not responsible frontend for the key, forward the request to the responsible frontend
                 if responsible_frontend.id != self.state.fronts[self.state.this].id {
-                    let addr = SystemState::get_peer_addr(&responsible_frontend);
+                    let addr = responsible_frontend.get_http_addr();
                     let mut client = FawnFrontendServiceClient::connect(addr).await.map_err(|e| Status::internal(e.to_string()))?;
                     let request = tonic::Request::new(PutRequest {user_key: user_key, value: value});
                     let response = client.put_value(request).await.map_err(|e| Status::internal(e.to_string()))?;

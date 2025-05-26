@@ -14,10 +14,12 @@ pub struct NodeInfo {
 impl NodeInfo {
     /// Creates a new NodeInfo instance
     pub fn new(ip: String, port: u32, id: u32) -> NodeInfo {
-        NodeInfo { ip, port, id }
+        let clean_ip = ip.trim_start_matches("http://").trim_start_matches("https://");
+        NodeInfo { ip: clean_ip.to_string(), port, id }
     }
 
-    pub fn get_addr(&self) -> String {
+    /// Returns the address in gRPC format (http://IP:PORT)
+    pub fn get_http_addr(&self) -> String {
         format!("http://{}:{}", self.ip, self.port)
     }
 }

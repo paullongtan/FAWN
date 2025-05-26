@@ -21,8 +21,8 @@ pub async fn handle_request_join_ring(
         .ok_or_else(|| Box::new(FawnError::NoBackendAvailable("no backend available".to_string())))?;
 
     // Notify the successor and predecessor of the new node
-    let successor_addr = successor.get_addr();
-    let predecessor_addr = predecessor.get_addr();
+    let successor_addr = successor.get_http_addr();
+    let predecessor_addr = predecessor.get_http_addr();
     let mut successor_client = FawnBackendServiceClient::connect(successor_addr).await?;
     let mut predecessor_client = FawnBackendServiceClient::connect(predecessor_addr).await?;
 
@@ -55,7 +55,7 @@ pub async fn handle_finalize_join_ring(
     // notify other frontends of the new node's node info to update their backend list
     for i in 0..fronts.len() {
         if i != this {
-            let addr = fronts[i].get_addr();
+            let addr = fronts[i].get_http_addr();
             let mut client = FawnFrontendServiceClient::connect(addr).await?;
             let request = Request::new(NotifyBackendJoinRequest {
                 backend_info: Some(new_node.clone().into())
@@ -79,7 +79,7 @@ pub async fn handle_get_value(
         .ok_or_else(|| Box::new(FawnError::NoBackendAvailable("no backend available".to_string())))?;
     
     // Create a gRPC client to the successor backend
-    let addr = successor.get_addr();
+    let addr = successor.get_http_addr();
     let mut client = FawnBackendServiceClient::connect(addr).await?;
     
     // Make the gRPC call to get the value
@@ -103,7 +103,7 @@ pub async fn handle_put_value(
         .ok_or_else(|| Box::new(FawnError::NoBackendAvailable("no backend available".to_string())))?;
     
     // Create a gRPC client to the successor backend
-    let addr = successor.get_addr();
+    let addr = successor.get_http_addr();
     let mut client = FawnBackendServiceClient::connect(addr).await?;
     
     // Make the gRPC call to store the value
