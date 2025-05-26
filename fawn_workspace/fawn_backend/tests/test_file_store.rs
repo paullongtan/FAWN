@@ -77,3 +77,86 @@ fn demo_put_file() {
         println!("  {}", path.display());
     }
 }
+
+#[test]
+fn chunked_delete_nonexistent() {
+    let dir = TempDir::new().unwrap();
+    let kv = Arc::new(LogStructuredStore::open(dir.path()).unwrap());
+    let fs = ChunkedFileStore::new(kv.clone());
+    assert!(fs.delete_file("no_such_file").is_ok());
+}
+
+#[test]
+fn chunked_fetch_nonexistent() {
+    let dir = TempDir::new().unwrap();
+    let kv = Arc::new(LogStructuredStore::open(dir.path()).unwrap());
+    let fs = ChunkedFileStore::new(kv.clone());
+    let out = NamedTempFile::new().unwrap();
+    assert!(fs.get_file("no_such_file", out.path()).is_err());
+}
+
+#[test]
+fn chunked_overwrite_file() {
+    let dir = TempDir::new().unwrap();
+    let kv = Arc::new(LogStructuredStore::open(dir.path()).unwrap());
+    let fs = ChunkedFileStore::new(kv.clone());
+
+    // First put
+    let mut src1 = NamedTempFile::new().unwrap();
+    let data1 = vec![1u8; 1024];
+    src1.write_all(&data1).unwrap();
+    fs.put_file("file", src1.path()).unwrap();
+
+    // Overwrite with new data
+    let mut src2 = NamedTempFile::new().unwrap();
+    let data2 = vec![2u8; 1024];
+    src2.write_all(&data2).unwrap();
+    fs.put_file("file", src2.path()).unwrap();
+
+    // Fetch and check
+    let out = NamedTempFile::new().unwrap();
+    fs.get_file("file", out.path()).unwrap();
+    let mut round = Vec::new();
+    std::fs::File::open(out.path()).unwrap().read_to_end(&mut round).unwrap();
+    assert_eq!(round, data2);
+}
+
+#[test]
+fn chunked_concurrent_put() {
+    use std::thread;
+
+    let dir = TempDir::new().unwrap();
+    let kv = Arc::new(LogStructuredStore::open(dir.path()).unwrap());
+    let fs = Arc::new(ChunkedFileStore::new(kv.clone()));
+
+    // Spawn 8 threads to put files concurrently
+    // each thread creates a temp file with 4096 bytes, all set to the thread's index
+    let handles: Vec<_> = (0..8).map(|i| {
+        let fs = fs.clone();
+        thread::spawn(move || {
+            // Create a temporary file with 4096 bytes of data
+            let mut src = NamedTempFile::new().unwrap();
+            let data = vec![i as u8; 4096];
+            src.write_all(&data).unwrap();
+
+            // Put the file with a unique key
+            let key = format!("file{}", i);
+            fs.put_file(&key, src.path()).unwrap();
+
+            // Return the key and data for verification
+            (key, data)
+        })
+    }).collect();
+
+    // Collect results and verify
+    for handle in handles {
+        let (key, data) = handle.join().unwrap();
+        let out = NamedTempFile::new().unwrap();
+        fs.get_file(&key, out.path()).unwrap();
+
+        // Read the output file and verify its contents
+        let mut round = Vec::new();
+        std::fs::File::open(out.path()).unwrap().read_to_end(&mut round).unwrap();
+        assert_eq!(round, data, "Data mismatch for key {}", key);
+    }
+}

@@ -219,7 +219,7 @@ impl LogStructuredStore {
     }
 
     /// Iterate over all records in the store within the given hash range.
-    /// The range is inclusive of `lo` and exclusive of `hi`. [lo, hi)
+    /// The range is exclusive of `lo` and inclusive of `hi`. (lo, hi]
     /// This function is for migration
     /// It returns an iterator over `(key, value)` pair that matches the range.
     pub fn iter_range(
