@@ -57,6 +57,42 @@ impl SegmentWriter {
         })
     }
 
+    /// Re-open an existing segment (.log) for appending
+    pub fn open<P: AsRef<Path>>(dir: P, id: u64, max_size: u32) -> io::Result<Self> {
+        let meta = SegmentInfo::new(dir, id);
+        let log_fd = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&meta.log_path)?;
+        let offset = log_fd.metadata()?.len() as u32; // current write offset
+
+        // load footer if it exists
+        let mut footer_buf = Vec::new();
+        let mut in_mem_idx = HashMap::new();
+        if meta.ftr_path.exists() {
+            let ftr_fd = File::open(&meta.ftr_path)?;
+            let mmap = unsafe { Mmap::map(&ftr_fd)? };
+            if mmap.len() % 8 != 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Footer is corrupted"));
+            }
+            for slot in mmap.chunks_exact(8) {
+                let hash = u32::from_le_bytes(slot[0..4].try_into().unwrap());
+                let offset = u32::from_le_bytes(slot[4..8].try_into().unwrap());
+                footer_buf.push((hash, offset));
+                in_mem_idx.insert(hash, offset);
+            }
+        }
+
+        Ok(Self {
+            meta,
+            log_fd,
+            footer_buf,
+            in_mem_idx,
+            offset,
+            max_size,
+        })
+    }
+
     pub fn append_put(&mut self, key: &[u8], val: &[u8]) -> io::Result<()> {
         self.append_generic(key, val, RecordFlags::Put)
     }
@@ -184,24 +220,40 @@ impl SegmentReader {
     }
 
     pub fn open_with_fd(meta: SegmentInfo, log_fd: File) -> io::Result<Self> {
-        let ftr_fd = File::open(&meta.ftr_path)?;
-        let footer_mm = unsafe { Mmap::map(&ftr_fd)? };
+        // Try to open the footer file, map NotFound to InvalidData
+        let ftr_fd = File::open(&meta.ftr_path).map_err(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                io::Error::new(io::ErrorKind::InvalidData, "Footer is missing")
+            } else {
+                e
+            }
+        })?;
+
+        let footer_mm = unsafe { Mmap::map(&ftr_fd)? }; // memory-map the footer file
         let reader = Self { meta, log_fd, footer_mm };
         
         if reader.footer_valid() {
+            println!("SegmentReader: footer is valid");
             Ok(reader)
         } else {
             Err(io::Error::new(io::ErrorKind::InvalidData, "Footer is corrupted"))
         }
     }
 
-    /// check if the footer is valid:
+    pub fn log_len(&self) -> std::io::Result<u64> {
+        self.log_fd.metadata().map(|m| m.len())
+    }
+
+    /// check if the footer is corrupted (assuming the footer is already memory-mapped):
     /// - must be a multiple of 8 bytes (hash32 + offset32)
     /// - all offsets must be within the log file length
     fn footer_valid(&self) -> bool {
+        // footer must be a multiple of 8 bytes (hash32 + offset32)
         if self.footer_mm.len() % 8 != 0 {
-            return false; // footer must be a multiple of 8 bytes (hash32 + offset32)
+            return false;
         }
+
+        // check that all offsets are within the log file length
         let log_len = self.log_fd.metadata().map(|m| m.len()).unwrap_or(0);
         for slot in self.footer_mm.chunks_exact(8) {
             let off = u32::from_le_bytes(slot[4..8].try_into().unwrap()) as u64;

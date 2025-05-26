@@ -94,25 +94,43 @@ impl LogStructuredStore {
             .collect();
         ids.sort_unstable_by(|a, b| b.cmp(a)); // descending order
 
-        // open existing segments
         let mut sealed_readers = Vec::new(); 
-        for &id in &ids {
+        let mut active_writer: Option<SegmentWriter> = None;
+        
+        // open existing segments
+        for (idx, &id) in ids.iter().enumerate() {
             let meta = SegmentInfo::new(&dir, id);
-            match SegmentReader::open(meta.clone()) {
-                Ok(reader) => sealed_readers.push(reader), // footer healthy
+
+            // try to open the segment reader
+            let reader = match SegmentReader::open(meta.clone()) {
+                Ok(r) => r, 
                 Err(e) if e.kind() == io::ErrorKind::InvalidData => {
                     eprintln!("logstore: rebuilding footer for segment {:016X}", id);
                     rebuild_footer(&meta)?;
-                    let reader = SegmentReader::open(meta)?;
-                    sealed_readers.push(reader);
+                    SegmentReader::open(meta.clone())?
                 }
                 Err(e) => return Err(e), // real I/O error
+            };
+
+            // decide whether to reuse the latest segment as the active writer
+            if idx == 0 {
+                let log_len = reader.log_len()? as u32;
+                if log_len < MAX_SEG_SIZE {
+                    // reuse this segment as the active writer
+                    active_writer = Some(SegmentWriter::open(&dir, id, MAX_SEG_SIZE)?);
+                    continue; // skip adding this reader
+                }
             }
+
+            // add the reader to the sealed list
+            sealed_readers.push(reader);
         }
 
-        // create a new active segment writer
-        let next_id = ids.first().map_or(0, |&id| id + 1);
-        let writer = SegmentWriter::create(&dir, next_id, MAX_SEG_SIZE)?;
+        // create a new active segment writer if no reusable segment was found
+        let writer = active_writer.unwrap_or_else(|| {
+            let next_id = ids.first().map_or(0, |&id| id + 1);
+            SegmentWriter::create(&dir, next_id, MAX_SEG_SIZE).unwrap()          
+        });
 
         Ok(Self {
             dir,
@@ -284,7 +302,7 @@ mod tests {
         // retrieve
         assert!(store.get(b"K1").unwrap().is_some());
 
-        // flush & drop
+        // flush & drop (graceful shutdown)
         store.flush().unwrap();
         drop(store);
 
@@ -326,5 +344,39 @@ mod tests {
         let rdr2 = SegmentReader::open(rdr.meta.clone()).unwrap();
         assert!(rdr2.lookup(crate::record::hash32(b"alpha"), b"alpha").unwrap().is_none());
         assert_eq!(rdr2.lookup(crate::record::hash32(b"beta"), b"beta").unwrap(), Some(b"two".to_vec()));
+    }
+
+    #[test]
+    fn test_reuse_segment_as_writer() {
+        // Create a temp directory and open the store
+        let dir = TempDir::new().unwrap();
+        let store = LogStructuredStore::open(dir.path()).unwrap();
+
+        // Fill less than MAX_SEG_SIZE so the segment is not full
+        let small_val = vec![1u8; 1024]; // 1 KiB
+        store.put(b"reuse1".to_vec(), small_val.clone()).unwrap();
+
+        // Ensure the record is retrievable
+        assert_eq!(store.get(b"reuse1").unwrap(), Some(small_val.clone()));
+
+        // Drop the store to simulate shutdown (footer hashn't been flushed)
+        drop(store);
+
+        // Reopen the store, which should reuse the existing segment as writer
+        let store2 = LogStructuredStore::open(dir.path()).unwrap();
+
+        // Put another record, which should go into the same segment
+        store2.put(b"reuse2".to_vec(), small_val.clone()).unwrap();
+
+        // Both records should be retrievable
+        assert_eq!(store2.get(b"reuse1").unwrap(), Some(small_val.clone()));
+        assert_eq!(store2.get(b"reuse2").unwrap(), Some(small_val.clone()));
+
+        // Ensure only one .log file exists (no roll)
+        let log_count = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_str().unwrap().ends_with(".log"))
+            .count();
+        assert_eq!(log_count, 1, "Should only be one segment log file");
     }
 }
