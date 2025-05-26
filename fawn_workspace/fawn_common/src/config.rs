@@ -10,16 +10,23 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Receiver;
 
-
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FrontConfig {
     pub fronts: Vec<String>,
     pub this: usize,
-    pub ready: Option<Sender<bool>>,
-    pub shutdown: Option<Receiver<()>>,
 }
 
 impl FrontConfig {
     pub fn new(fronts: Vec<String>, this: usize) -> FrontConfig {
-        todo!()
+        FrontConfig {
+            fronts,
+            this,
+        }
+    }
+
+    pub fn from_file(file_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(file_path)?;
+        let config: FrontConfig = serde_json::from_str(&contents)?;
+        Ok(config)
     }
 }
