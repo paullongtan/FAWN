@@ -36,14 +36,23 @@ fn rebuild_footer(meta: &crate::segment::SegmentInfo) -> io::Result<()> {
     while (off as u64) < log_len {
         // Read the record length (4 bytes) at the current offset
         let mut len_buf = [0u8; 4];
-        fd.read_exact_at(&mut len_buf, off as u64)?;
+        if let Err(_) = fd.read_exact_at(&mut len_buf, off as u64) {
+            break; // incomplete length field at the end
+        }
 
         // compute the full record length (including the 4 bytes for rec_len itself)
         let rec_len = u32::from_le_bytes(len_buf) + 4;
 
+        // check if the record length is valid
+        if rec_len == 4 || (off as u64) + (rec_len as u64) > log_len {
+            break; // incomplete or corrupt record at the end
+        }
+
         // read the fixed header after rec_len (key_len + flags + reserved + hash32) (8 bytes)
         let mut hdr = [0u8; 8];
-        fd.read_exact_at(&mut hdr, off as u64 + 4)?;
+        if let Err(_) = fd.read_exact_at(&mut hdr, off as u64 + 4) {
+            break; // incomplete header at the end
+        }
 
         // retrieve the hash32 from the header
         let hash = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
