@@ -1,15 +1,17 @@
 /*
 TODO: 
+- reuse the latest segment if it is not full, instead of always rolling.
 - Compaction work not implemented yet. (placeholder only)
 */
 
 use crate::segment::{SegmentInfo, SegmentWriter, SegmentReader};
 use std::{
     fs, 
-    io, 
+    io::{self, Write}, 
     path::PathBuf, 
     sync::Mutex, 
-    time::{Duration, Instant}
+    time::{Duration, Instant}, 
+    os::unix::fs::FileExt
 };
 
 const FLUSH_EVERY: Duration = Duration::from_secs(5); // flush every 5 seconds
@@ -21,6 +23,46 @@ pub struct LogStructuredStore {
     sealed:        Mutex<Vec<SegmentReader>>, // sorted by id descending (newest first)
     max_seg_size:  u32,
     last_flush:    Mutex<Instant>,
+}
+
+/// Rebuild the footer for a segment by reading the log file and writing the footer file.
+fn rebuild_footer(meta: &crate::segment::SegmentInfo) -> io::Result<()> {
+    let fd = fs::File::open(&meta.log_path)?;
+    let mut off = 0u32; // offset in the log file
+    let mut footer = Vec::<(u32, u32)>::new(); // (hash32, offset)
+    let log_len = fd.metadata()?.len(); // total length of the log file
+
+    // sequentially read the log file to rebuild entries for the footer
+    while (off as u64) < log_len {
+        // Read the record length (4 bytes) at the current offset
+        let mut len_buf = [0u8; 4];
+        fd.read_exact_at(&mut len_buf, off as u64)?;
+
+        // compute the full record length (including the 4 bytes for rec_len itself)
+        let rec_len = u32::from_le_bytes(len_buf) + 4;
+
+        // read the fixed header after rec_len (key_len + flags + reserved + hash32) (8 bytes)
+        let mut hdr = [0u8; 8];
+        fd.read_exact_at(&mut hdr, off as u64 + 4)?;
+
+        // retrieve the hash32 from the header
+        let hash = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
+        footer.push((hash, off));
+
+        // move to the next record
+        off += rec_len; 
+    }
+
+    // sort by hash32
+    footer.sort_by_key(|e| e.0);
+
+    // wrtie the footer to the segment's footer file (overwrite existing)
+    let mut ftr = fs::File::create(&meta.ftr_path)?;
+    for (h, o) in footer {
+        ftr.write_all(&h.to_le_bytes())?;
+        ftr.write_all(&o.to_le_bytes())?;
+    }
+    ftr.sync_all()
 }
 
 impl LogStructuredStore {
@@ -47,8 +89,16 @@ impl LogStructuredStore {
         let mut sealed_readers = Vec::new(); 
         for &id in &ids {
             let meta = SegmentInfo::new(&dir, id);
-            let reader = SegmentReader::open(meta)?;
-            sealed_readers.push(reader);
+            match SegmentReader::open(meta.clone()) {
+                Ok(reader) => sealed_readers.push(reader), // footer healthy
+                Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                    eprintln!("logstore: rebuilding footer for segment {:016X}", id);
+                    rebuild_footer(&meta)?;
+                    let reader = SegmentReader::open(meta)?;
+                    sealed_readers.push(reader);
+                }
+                Err(e) => return Err(e), // real I/O error
+            }
         }
 
         // create a new active segment writer
@@ -185,7 +235,6 @@ impl LogStructuredStore {
 }
 
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +284,38 @@ mod tests {
         assert!(reopened.get(b"K2").unwrap().is_some());
         reopened.delete(b"K2").unwrap();
         assert!(reopened.get(b"K2").unwrap().is_none());
+    }
+
+    #[test]
+    fn rebuild_footer_after_crash() {
+        use std::fs;
+
+        let dir = TempDir::new().unwrap();
+        let mut w = SegmentWriter::create(dir.path(), 0, 4 * 1024 * 1024).unwrap();
+
+        // Append some records
+        w.append_put(b"alpha", b"one").unwrap();
+        w.append_put(b"beta",  b"two").unwrap();
+        w.append_delete(b"alpha").unwrap();
+
+        // seal the writer to flush footer into the .ftr file
+        let rdr = w.seal().unwrap();
+
+        // Simulate crash: delete the .ftr file
+        fs::remove_file(&rdr.meta.ftr_path.clone()).unwrap();
+
+        // check if the footer is missing now
+        assert!(!rdr.meta.ftr_path.exists(), "Footer file should be deleted");
+
+        // Rebuild the footer from the log file
+        crate::log_store::rebuild_footer(&rdr.meta).unwrap();
+
+        // footer should now exist
+        assert!(rdr.meta.ftr_path.exists(), "Footer file should be rebuilt");
+
+        // Reopen the segment and verify lookups
+        let rdr2 = SegmentReader::open(rdr.meta.clone()).unwrap();
+        assert!(rdr2.lookup(crate::record::hash32(b"alpha"), b"alpha").unwrap().is_none());
+        assert_eq!(rdr2.lookup(crate::record::hash32(b"beta"), b"beta").unwrap(), Some(b"two".to_vec()));
     }
 }

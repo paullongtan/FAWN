@@ -186,7 +186,30 @@ impl SegmentReader {
     pub fn open_with_fd(meta: SegmentInfo, log_fd: File) -> io::Result<Self> {
         let ftr_fd = File::open(&meta.ftr_path)?;
         let footer_mm = unsafe { Mmap::map(&ftr_fd)? };
-        Ok(Self { meta, log_fd, footer_mm })
+        let reader = Self { meta, log_fd, footer_mm };
+        
+        if reader.footer_valid() {
+            Ok(reader)
+        } else {
+            Err(io::Error::new(io::ErrorKind::InvalidData, "Footer is corrupted"))
+        }
+    }
+
+    /// check if the footer is valid:
+    /// - must be a multiple of 8 bytes (hash32 + offset32)
+    /// - all offsets must be within the log file length
+    fn footer_valid(&self) -> bool {
+        if self.footer_mm.len() % 8 != 0 {
+            return false; // footer must be a multiple of 8 bytes (hash32 + offset32)
+        }
+        let log_len = self.log_fd.metadata().map(|m| m.len()).unwrap_or(0);
+        for slot in self.footer_mm.chunks_exact(8) {
+            let off = u32::from_le_bytes(slot[4..8].try_into().unwrap()) as u64;
+            if off >= log_len {
+                return false; // offset past EOR -> corrupted footer
+            }
+        }
+        true // footer is valid
     }
 
     /// Linear scan footer to find the hash32. (replace with binary search later)
