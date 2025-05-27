@@ -2,11 +2,13 @@ pub mod storage;
 pub mod service;
 
 // Re-export commonly used types
-pub use storage::{
-    LogStore,
+pub use storage::logstore::{
+    LogStructuredStore,
     Record,
-    Segment,
-    Compaction,
+    SegmentInfo,
+    SegmentWriter,
+    SegmentReader,
+    // Compaction,
 };
 
-pub use service::BackendService;
+// pub use service::BackendService;

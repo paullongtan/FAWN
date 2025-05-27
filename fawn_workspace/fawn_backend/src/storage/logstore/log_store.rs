@@ -141,23 +141,8 @@ impl LogStructuredStore {
         })
     }
 
-    pub fn put(&self, key: Vec<u8>, val: Vec<u8>) -> io::Result<()> {
-        let len_needed = super::record::FIXED_HDR + key.len() + val.len() + 4; // 4 for CRC32
-        let mut writer = self.active.lock().unwrap();
-
-        // check if we need to roll the segment
-        if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
-            self.roll_segment(&mut *writer)?;
-        }
-
-        // append the record
-        writer.append_put(&key, &val)?;
-
-        self.check_periodic_flush(&mut *writer)
-    }
-
     /// Let user directly put a record using a hashed key using their own hash function.
-    pub fn put_hashed(&self, hashed_key: u32, value: Vec<u8>) -> io::Result<()> {
+    pub fn put(&self, hashed_key: u32, value: Vec<u8>) -> io::Result<()> {
         let key = EMPTY_KEY; // we don't use the key here, just the hash
         let len_needed = super::record::FIXED_HDR + key.len() + value.len() + 4; // 4 for CRC32
         let mut writer = self.active.lock().unwrap();
@@ -168,27 +153,13 @@ impl LogStructuredStore {
         }
 
         // append the record
-        writer.append_put_raw(hashed_key, &value)?;
+        writer.append_put(hashed_key, key, &value)?;
 
         self.check_periodic_flush(&mut *writer)
     }
 
-    pub fn delete(&self, key: &[u8]) -> io::Result<()> {
-        let len_needed = super::record::FIXED_HDR + key.len() + 4; // 4 for CRC32
-        let mut writer = self.active.lock().unwrap();
 
-        // check if we need to roll the segment
-        if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
-            self.roll_segment(&mut *writer)?;
-        }
-
-        // append the delete record
-        writer.append_delete(key)?;
-
-        self.check_periodic_flush(&mut *writer)
-    }
-
-    pub fn delete_hashed(&self, hashed_key: u32) -> io::Result<()> {
+    pub fn delete(&self, hashed_key: u32) -> io::Result<()> {
         let key = EMPTY_KEY; // we don't use the key here, just the hash
         let len_needed = super::record::FIXED_HDR + key.len() + 4; // 4 for CRC32
         let mut writer = self.active.lock().unwrap();
@@ -199,31 +170,13 @@ impl LogStructuredStore {
         }
         
         // append the delete record
-        writer.append_delete_raw(hashed_key)?;
+        writer.append_delete(hashed_key, key)?;
 
         self.check_periodic_flush(&mut *writer)
     }
 
-    pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let hash = super::record::hash32(key);
 
-        // search in the active segment first
-        if let Some(value) = self.active.lock().unwrap().lookup_in_mem(hash, key)? {
-            return Ok(value);
-        }
-
-        // then search in the sealed segments from newest to oldest
-        for reader in self.sealed.read().unwrap().iter() {
-            if let Some(value) = reader.lookup(hash, key)? {
-                return Ok(Some(value));
-            }
-        }
-
-        // not found
-        Ok(None)
-    }
-
-    pub fn get_hashed(&self, hashed_key: u32) -> io::Result<Option<Vec<u8>>> {
+    pub fn get(&self, hashed_key: u32) -> io::Result<Option<Vec<u8>>> {
         let key = EMPTY_KEY; // we don't use the key here, just the hash
 
         // search in the active segment first
@@ -233,7 +186,7 @@ impl LogStructuredStore {
 
         // then search in the sealed segments from newest to oldest
         for reader in self.sealed.read().unwrap().iter() {
-            if let Some(value) = reader.lookup(hash, key)? {
+            if let Some(value) = reader.lookup(hashed_key, key)? {
                 return Ok(Some(value));
             }
         }
@@ -276,42 +229,97 @@ impl LogStructuredStore {
         Ok(())
     }
 
-    /// Iterate over all records in the store within the given hash range.
-    /// The range is exclusive of `lo` and inclusive of `hi`. (lo, hi]
-    /// This function is for migration
-    /// It returns an iterator over `(key, value)` pair that matches the range.
-    /// the lo and hi expect the upper 32 bits of the SHA-256 hash of the key.
     pub fn iter_range(
         &self,
         lo: u32,
         hi: u32,
     ) -> io::Result<impl Iterator<Item = (Vec<u8>, Vec<u8>)>> {
-        // flush active footer so view is consistent
-        // wrapped to limit the lifetime of the lock
-        {
+        // flush footer and clone meta of active segment
+        let meta = {
             let mut w = self.active.lock().unwrap();
             w.flush_footer()?;
+            w.meta.clone()
+        };
+
+        // open a read-only view of the active segment
+        let active_seg = super::segment::SegmentReader::open(meta)?;
+
+        // collect matches from active + sealed
+        let mut items = Vec::<(Vec<u8>, Vec<u8>)>::new();
+
+        // scan the active segment first
+        for (h, off) in active_seg.footer_pairs() {
+            if !(lo < h && h <= hi) { continue; }
+            let buf = active_seg.read_record_bytes(off)?;
+            let rec = super::record::Record::decode(&mut &buf[..])?;
+            if rec.flags == super::record::RecordFlags::Put {
+                items.push((rec.key.to_vec(), rec.value.to_vec()));
+            }
         }
 
-        // collect matching pairs into a Vec while we hold the lock
-        let mut items = Vec::<(Vec<u8>, Vec<u8>)>::new();
-        let sealed = self.sealed.read().unwrap();
-
-        for seg in sealed.iter() {
+        // scan the sealed segments
+        for seg in self.sealed.read().unwrap().iter() {
             for (h, off) in seg.footer_pairs() {
                 if !(lo < h && h <= hi) { continue; }
-
                 let buf = seg.read_record_bytes(off)?;
                 let rec = super::record::Record::decode(&mut &buf[..])?;
-
                 if rec.flags == super::record::RecordFlags::Put {
                     items.push((rec.key.to_vec(), rec.value.to_vec()));
                 }
             }
         }
 
-        // return an iterator that owns the Vec (lock already released)
         Ok(items.into_iter())
+    }
+
+    // Private API: for appending records with key bytes
+    fn _put_with_key(&self, key: Vec<u8>, val: Vec<u8>) -> io::Result<()> {
+        let len_needed = super::record::FIXED_HDR + key.len() + val.len() + 4; // 4 for CRC32
+        let mut writer = self.active.lock().unwrap();
+
+        // check if we need to roll the segment
+        if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
+            self.roll_segment(&mut *writer)?;
+        }
+
+        // append the record
+        writer.append_put_with_key(&key, &val)?;
+
+        self.check_periodic_flush(&mut *writer)
+    }
+
+    fn _delete_with_key(&self, key: &[u8]) -> io::Result<()> {
+        let len_needed = super::record::FIXED_HDR + key.len() + 4; // 4 for CRC32
+        let mut writer = self.active.lock().unwrap();
+
+        // check if we need to roll the segment
+        if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
+            self.roll_segment(&mut *writer)?;
+        }
+
+        // append the delete record
+        writer.append_delete_with_key(key)?;
+
+        self.check_periodic_flush(&mut *writer)
+    }
+
+    fn _get_with_key(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let hash = super::record::hash32(key);
+
+        // search in the active segment first
+        if let Some(value) = self.active.lock().unwrap().lookup_in_mem(hash, key)? {
+            return Ok(value);
+        }
+
+        // then search in the sealed segments from newest to oldest
+        for reader in self.sealed.read().unwrap().iter() {
+            if let Some(value) = reader.lookup(hash, key)? {
+                return Ok(Some(value));
+            }
+        }
+
+        // not found
+        Ok(None)
     }
 }
 
@@ -320,26 +328,40 @@ impl LogStructuredStore {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use fawn_common::util::get_key_id;
 
     #[test]
     fn test_log_store_basic() -> io::Result<()> {
         let temp_dir = TempDir::new()?;
         let store = LogStructuredStore::open(temp_dir.path())?;
 
-        // put some records
-        store.put(b"key1".to_vec(), b"value1".to_vec())?;
-        store.put(b"key2".to_vec(), b"value2".to_vec())?;
-        store.put(b"key3".to_vec(), b"value3".to_vec())?;
+        // put some records using hashed key ids
+        let key1 = "key1";
+        let key2 = "key2";
+        let key3 = "key3";
+        let key4 = "key4";
+        let id1 = get_key_id(key1);
+        let id2 = get_key_id(key2);
+        let id3 = get_key_id(key3);
+        let id4 = get_key_id(key4);
 
-        // get records
-        assert_eq!(store.get(b"key1")?, Some(b"value1".to_vec()));
-        assert_eq!(store.get(b"key2")?, Some(b"value2".to_vec()));
-        assert_eq!(store.get(b"key3")?, Some(b"value3".to_vec()));
-        assert_eq!(store.get(b"key4")?, None); // not found
+        store.put(id1, b"value1".to_vec())?;
+        store.put(id2, b"value2".to_vec())?;
+        store.put(id3, b"value3".to_vec())?;
 
-        // delete a record
-        store.delete(b"key2")?;
-        assert_eq!(store.get(b"key2")?, None); // should be deleted
+        // get records using hashed key ids
+        assert_eq!(store.get(id1)?, Some(b"value1".to_vec()));
+        assert_eq!(store.get(id2)?, Some(b"value2".to_vec()));
+        assert_eq!(store.get(id3)?, Some(b"value3".to_vec()));
+        assert_eq!(store.get(id4)?, None); // not found
+
+        // delete a record using hashed key id
+        store.delete(id2)?;
+        assert_eq!(store.get(id2)?, None); // should be deleted
+
+        // put another record to key2
+        store.put(id2, b"value2_updated".to_vec())?;
+        assert_eq!(store.get(id2)?, Some(b"value2_updated".to_vec()));
 
         Ok(())
     }
@@ -349,12 +371,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = LogStructuredStore::open(dir.path()).unwrap();
 
+        let key1 = "key1";
+        let key2 = "key2";
+        let id1 = get_key_id(key1);
+        let id2 = get_key_id(key2);
+
         // tiny max size to force roll
-        store.put(b"K1".to_vec(), vec![0; 1024]).unwrap(); // 1 KiB
-        store.put(b"K2".to_vec(), vec![0; 1024]).unwrap();
+        store.put(id1, vec![0; 1024]).unwrap(); // 1 KiB
+        store.put(id2, vec![0; 1024]).unwrap();
 
         // retrieve
-        assert!(store.get(b"K1").unwrap().is_some());
+        assert!(store.get(id1).unwrap().is_some());
 
         // flush & drop (graceful shutdown)
         store.flush().unwrap();
@@ -362,10 +389,11 @@ mod tests {
 
         // reopen -> data still there
         let reopened = LogStructuredStore::open(dir.path()).unwrap();
-        assert!(reopened.get(b"K2").unwrap().is_some());
-        reopened.delete(b"K2").unwrap();
-        assert!(reopened.get(b"K2").unwrap().is_none());
+        assert!(reopened.get(id2).unwrap().is_some());
+        reopened.delete(id2).unwrap();
+        assert!(reopened.get(id2).unwrap().is_none());
     }
+
 
     #[test]
     fn rebuild_footer_after_crash() {
@@ -374,10 +402,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut w = SegmentWriter::create(dir.path(), 0, 4 * 1024 * 1024).unwrap();
 
+        let key1 = "alpha";
+        let key2 = "beta";
+        let id1 = get_key_id(key1);
+        let id2 = get_key_id(key2);
+
         // Append some records
-        w.append_put(b"alpha", b"one").unwrap();
-        w.append_put(b"beta",  b"two").unwrap();
-        w.append_delete(b"alpha").unwrap();
+        w.append_put(id1, &[], b"one").unwrap();
+        w.append_put(id2, &[],  b"two").unwrap();
+        w.append_delete(id1, &[]).unwrap();
 
         // seal the writer to flush footer into the .ftr file
         let rdr = w.seal().unwrap();
@@ -396,8 +429,8 @@ mod tests {
 
         // Reopen the segment and verify lookups
         let rdr2 = SegmentReader::open(rdr.meta.clone()).unwrap();
-        assert!(rdr2.lookup(super::record::hash32(b"alpha"), b"alpha").unwrap().is_none());
-        assert_eq!(rdr2.lookup(super::record::hash32(b"beta"), b"beta").unwrap(), Some(b"two".to_vec()));
+        assert!(rdr2.lookup(id1, &[]).unwrap().is_none());
+        assert_eq!(rdr2.lookup(id2, &[]).unwrap(), Some(b"two".to_vec()));
     }
 
     #[test]
@@ -406,12 +439,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = LogStructuredStore::open(dir.path()).unwrap();
 
+        let key1 = "reuse1";
+        let key2 = "reuse2";
+        let id1 = get_key_id(key1);
+        let id2 = get_key_id(key2);
+
         // Fill less than MAX_SEG_SIZE so the segment is not full
         let small_val = vec![1u8; 1024]; // 1 KiB
-        store.put(b"reuse1".to_vec(), small_val.clone()).unwrap();
+        store.put(id1, small_val.clone()).unwrap();
 
         // Ensure the record is retrievable
-        assert_eq!(store.get(b"reuse1").unwrap(), Some(small_val.clone()));
+        assert_eq!(store.get(id1).unwrap(), Some(small_val.clone()));
 
         // Drop the store to simulate shutdown (footer hashn't been flushed)
         drop(store);
@@ -420,11 +458,11 @@ mod tests {
         let store2 = LogStructuredStore::open(dir.path()).unwrap();
 
         // Put another record, which should go into the same segment
-        store2.put(b"reuse2".to_vec(), small_val.clone()).unwrap();
+        store2.put(id2, small_val.clone()).unwrap();
 
         // Both records should be retrievable
-        assert_eq!(store2.get(b"reuse1").unwrap(), Some(small_val.clone()));
-        assert_eq!(store2.get(b"reuse2").unwrap(), Some(small_val.clone()));
+        assert_eq!(store2.get(id1).unwrap(), Some(small_val.clone()));
+        assert_eq!(store2.get(id2).unwrap(), Some(small_val.clone()));
 
         // Ensure only one .log file exists (no roll)
         let log_count = std::fs::read_dir(dir.path())
@@ -448,9 +486,10 @@ mod tests {
             let store = store.clone();
             thread::spawn(move || {
                 for j in 0..100 {
-                    let key = format!("key{}_{}", i, j).into_bytes();
+                    let key = format!("key{}_{}", i, j);
+                    let id = get_key_id(&key);
                     let val = vec![i as u8, j as u8];
-                    store.put(key, val).unwrap();
+                    store.put(id, val).unwrap();
                 }
             })
         }).collect();
@@ -460,9 +499,10 @@ mod tests {
             let store = store.clone();
             thread::spawn(move || {
                 for j in 0..100 {
-                    let key = format!("key{}_{}", i, j).into_bytes();
+                    let key = format!("key{}_{}", i, j);
+                    let id = get_key_id(&key);
                     // Try to read, may be None if not written yet
-                    let _ = store.get(&key);
+                    let _ = store.get(id);
                     // Optionally sleep to increase interleaving
                     thread::sleep(Duration::from_millis(1));
                 }
@@ -476,37 +516,61 @@ mod tests {
         // Verify some data
         for i in 0..4 {
             for j in 0..100 {
-                let key = format!("key{}_{}", i, j).into_bytes();
+                let key = format!("key{}_{}", i, j);
+                let id = get_key_id(&key);
                 let val = vec![i as u8, j as u8];
-                assert_eq!(store.get(&key).unwrap(), Some(val));
+                assert_eq!(store.get(id).unwrap(), Some(val));
             }
         }
     }
 
     #[test]
-    fn test_put_hashed_get_hashed() {
-        let dir = TempDir::new().unwrap();
-        let store = LogStructuredStore::open(dir.path()).unwrap();
+    fn test_iter_range() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = LogStructuredStore::open(temp_dir.path()).unwrap();
 
-        // Use a u32 hash as the key
-        let hashed_key: u32 = 0x12345678;
-        let value = b"hashed_value".to_vec();
+        // Insert records
+        let keys = vec!["apple", "banana", "cherry", "date"];
+        let values: Vec<&[u8]> = vec![b"red".as_ref(), b"yellow".as_ref(), b"red".as_ref(), b"brown".as_ref()];
+        let mut ids = Vec::new();
+        for (k, v) in keys.iter().zip(values.iter()) {
+            let id = get_key_id(k);
+            ids.push(id);
+            store.put(id, v.to_vec()).unwrap();
+        }
 
-        // Put the record using the hashed key
-        store.put_hashed(hashed_key, value.clone()).unwrap();
+        // assert that we can retrieve the values
+        for (k, v) in keys.iter().zip(values.iter()) {
+            let id = get_key_id(k);
+            assert_eq!(store.get(id).unwrap(), Some(v.to_vec()));
+        }
 
-        // Get the record using the hashed key
-        let retrieved = store.get_hashed(hashed_key).unwrap();
-        assert_eq!(retrieved, Some(value.clone()), "Retrieved value should match the put value");
+        // Sort ids to pick a range
+        let mut sorted_ids = ids.clone();
+        sorted_ids.sort_unstable();
 
-        // Overwrite with a new value
-        let new_value = b"new_hashed_value".to_vec();
-        store.put_hashed(hashed_key, new_value.clone()).unwrap();
-        let retrieved_2 = store.get_hashed(hashed_key).unwrap();
-        assert_eq!(retrieved_2, Some(new_value), "Retrieved value should match the new put value");
+        // Pick a range that includes "banana" and "cherry"
+        let lo = sorted_ids[0]; // apple
+        let hi = sorted_ids[2]; // cherry
 
-        // Delete the record
-        store.delete_hashed(hashed_key).unwrap();
-        assert_eq!(store.get_hashed(hashed_key).unwrap(), None);
+        println!("Iterating range: ({}, {}]", lo, hi);
+
+        // collect results in (lo, hi] range
+        let results: Vec<_> = store.iter_range(lo, hi).unwrap().collect();
+        println!("Found {} records in range", results.len());
+        assert_eq!(results.len(), 2); // should find banana and cherry
+
+        // Find which keys are in the range
+        let expected: Vec<_> = keys.iter()
+            .zip(values.iter())
+            .filter(|(k, _)| {
+                let id = get_key_id(k);
+                id > lo && id <= hi
+            })
+            .map(|(k, v)| (EMPTY_KEY.to_vec().to_vec(), v.to_vec()))
+            .collect();
+
+        assert_eq!(results, expected);
     }
+
 }

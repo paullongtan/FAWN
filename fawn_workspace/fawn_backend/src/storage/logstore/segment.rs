@@ -93,44 +93,15 @@ impl SegmentWriter {
         })
     }
 
-    pub fn append_put(&mut self, key: &[u8], val: &[u8]) -> io::Result<()> {
-        self.append_generic(key, val, RecordFlags::Put)
+    pub fn append_put(&mut self, hash: u32, key: &[u8], val: &[u8]) -> io::Result<()> {
+        self.append_generic(hash, key, val, RecordFlags::Put)
     }
 
-    pub fn append_delete(&mut self, key: &[u8]) -> io::Result<()> {
-        self.append_generic(key, &[], RecordFlags::Delete)
+    pub fn append_delete(&mut self, hash: u32, key: &[u8]) -> io::Result<()> {
+        self.append_generic(hash, key, &[], RecordFlags::Delete)
     }
 
-    fn append_generic(&mut self, key: &[u8], val: &[u8], flags: RecordFlags) -> io::Result<()> {
-        let hash = record::hash32(key);
-        let rec = Record { flags, key, value: val, hash32: hash };
-
-        // rollover guard (caller should roll segment if needed)
-        if self.offset + rec.encoded_len() as u32 > self.max_size {
-            return Err(io::Error::new(io::ErrorKind::Other, "Segment size limit exceeded"));
-        }
-
-        // encode into temp buf
-        let mut buf = Vec::with_capacity(rec.encoded_len());
-        rec.encode(&mut buf)?;
-
-        // write & update book-keeping
-        self.log_fd.write_all(&buf)?;
-        self.footer_buf.push((hash, self.offset));
-        self.in_mem_idx.insert(hash, self.offset);
-        self.offset += buf.len() as u32;
-        Ok(())
-    }
-
-    pub fn append_put_raw(&mut self, hash: u32, key: &[u8], val: &[u8]) -> io::Result<()> {
-        self.append_generic_raw(hash, key, val, RecordFlags::Put)
-    }
-
-    pub fn append_delete_raw(&mut self, hash: u32, key: &[u8]) -> io::Result<()> {
-        self.append_generic_raw(hash, key, &[], RecordFlags::Delete)
-    }
-
-    fn append_generic_raw(&mut self, hash: u32, key: &[u8], val: &[u8], flags: RecordFlags) -> io::Result<()> {
+    fn append_generic(&mut self, hash: u32, key: &[u8], val: &[u8], flags: RecordFlags) -> io::Result<()> {
         let rec = Record { flags, key, value: val, hash32: hash };
 
         // rollover guard (caller should roll segment if needed)
@@ -231,6 +202,36 @@ impl SegmentWriter {
 
     pub fn bytes_written(&self) -> u32 {
         self.offset
+    }
+
+    // For appending records with key bytes
+    pub fn append_put_with_key(&mut self, key: &[u8], val: &[u8]) -> io::Result<()> {
+        self.append_generic_with_key(key, val, RecordFlags::Put)
+    }
+
+    pub fn append_delete_with_key(&mut self, key: &[u8]) -> io::Result<()> {
+        self.append_generic_with_key(key, &[], RecordFlags::Delete)
+    }
+
+    pub fn append_generic_with_key(&mut self, key: &[u8], val: &[u8], flags: RecordFlags) -> io::Result<()> {
+        let hash = record::hash32(key);
+        let rec = Record { flags, key, value: val, hash32: hash };
+
+        // rollover guard (caller should roll segment if needed)
+        if self.offset + rec.encoded_len() as u32 > self.max_size {
+            return Err(io::Error::new(io::ErrorKind::Other, "Segment size limit exceeded"));
+        }
+
+        // encode into temp buf
+        let mut buf = Vec::with_capacity(rec.encoded_len());
+        rec.encode(&mut buf)?;
+
+        // write & update book-keeping
+        self.log_fd.write_all(&buf)?;
+        self.footer_buf.push((hash, self.offset));
+        self.in_mem_idx.insert(hash, self.offset);
+        self.offset += buf.len() as u32;
+        Ok(())
     }
 }
 
@@ -362,9 +363,9 @@ mod tests {
         let mut w = SegmentWriter::create(dir.path(), 0, 4 * 1024 * 1024).unwrap();
 
         // Append some records
-        w.append_put(b"alpha", b"one").unwrap();
-        w.append_put(b"beta",  b"two").unwrap();
-        w.append_delete(b"alpha").unwrap();
+        w.append_put_with_key(b"alpha", b"one").unwrap();
+        w.append_put_with_key(b"beta",  b"two").unwrap();
+        w.append_delete_with_key(b"alpha").unwrap();
 
         // check in-memory lookup
         assert_eq!(
