@@ -30,3 +30,26 @@ impl FrontConfig {
         Ok(config)
     }
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackConfig {
+    pub fronts: Vec<String>,
+    pub address: String,
+    pub storage_dir: String,
+}
+
+impl BackConfig {
+    pub fn new(fronts: Vec<String>, address: String, storage_dir: String) -> BackConfig {
+        BackConfig {
+            fronts,
+            address,
+            storage_dir,
+        }
+    }
+
+    pub fn from_file(file_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(file_path)?;
+        let config: BackConfig = serde_json::from_str(&contents)?;
+        Ok(config)
+    }
+}

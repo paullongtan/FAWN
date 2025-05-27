@@ -13,6 +13,7 @@ pub enum FawnError {
     NoBackendAvailable(String),
     KeyNotFound(String),
     SystemError(String),
+    InvalidRequest(String),
     Unknown(String),
 }
 
@@ -24,6 +25,7 @@ impl Display for FawnError {
             FawnError::TimeoutError(x) => format!("timeout error: {}", x),
             FawnError::KeyNotFound(x) => format!("key \"{}\" not found", x),
             FawnError::RpcError(x) => format!("rpc error: {}", x),
+            FawnError::InvalidRequest(x) => format!("invalid request: {}", x),
             FawnError::SystemError(x) => format!("system error: {}", x),
             FawnError::Unknown(x) => format!("unknown error: {}", x),
             FawnError::NoBackendAvailable(x) => format!("no backend available: {}", x),

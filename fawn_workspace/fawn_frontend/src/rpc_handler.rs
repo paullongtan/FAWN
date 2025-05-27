@@ -23,8 +23,8 @@ pub async fn handle_request_join_ring(
     // Notify the successor and predecessor of the new node
     let successor_addr = successor.get_http_addr();
     let predecessor_addr = predecessor.get_http_addr();
-    let mut successor_client = FawnBackendServiceClient::connect(successor_addr).await?;
-    let mut predecessor_client = FawnBackendServiceClient::connect(predecessor_addr).await?;
+    let mut successor_client = FawnBackendServiceClient::connect(successor_addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
+    let mut predecessor_client = FawnBackendServiceClient::connect(predecessor_addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to predecessor: {}", e)))?;
 
     // Prepare the successor of the new node for the split and update the successor's predecessor to the new node
     successor_client.prepare_for_split(PrepareForSplitRequest {
@@ -56,11 +56,11 @@ pub async fn handle_finalize_join_ring(
     for i in 0..fronts.len() {
         if i != this {
             let addr = fronts[i].get_http_addr();
-            let mut client = FawnFrontendServiceClient::connect(addr).await?;
+            let mut client = FawnFrontendServiceClient::connect(addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to frontend: {}", e)))?;
             let request = Request::new(NotifyBackendJoinRequest {
                 backend_info: Some(new_node.clone().into())
             });
-            let response = client.notify_backend_join(request).await?;
+            let response = client.notify_backend_join(request).await.map_err(|e| FawnError::RpcError(format!("Failed to notify other frontends: {}", e)))?;
             if !response.get_ref().success {
                 return Err(Box::new(FawnError::SystemError("Failed to notify other frontends".to_string())));
             }
@@ -80,14 +80,14 @@ pub async fn handle_get_value(
     
     // Create a gRPC client to the successor backend
     let addr = successor.get_http_addr();
-    let mut client = FawnBackendServiceClient::connect(addr).await?;
+    let mut client = FawnBackendServiceClient::connect(addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
     
     // Make the gRPC call to get the value
     let request = fawn_common::fawn_backend_api::GetRequest {
         key_id,
     };
     
-    let response = client.get_value(request).await?;
+    let response = client.get_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to get value: {}", e)))?;
     let response = response.into_inner();
     
     Ok((response.value, response.success))
@@ -104,7 +104,7 @@ pub async fn handle_put_value(
     
     // Create a gRPC client to the successor backend
     let addr = successor.get_http_addr();
-    let mut client = FawnBackendServiceClient::connect(addr).await?;
+    let mut client = FawnBackendServiceClient::connect(addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
     
     // Make the gRPC call to store the value
     let request = fawn_common::fawn_backend_api::StoreRequest {
@@ -112,7 +112,7 @@ pub async fn handle_put_value(
         value,
     };
     
-    let response = client.store_value(request).await?;
+    let response = client.store_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to store value: {}", e)))?;
     let response = response.into_inner();
     
     Ok(response.success)
