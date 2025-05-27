@@ -13,3 +13,6 @@ sha2     = "0.10"   # only for ChunkedFileStore test
 memmap2 = "0.9.5"   # for memory-mapped files in logstore
 crc32fast = "1"     # CRC-32C checksum for logstore
 byteorder = "1"     # handy LE helpers for logstore
+tonic = "0.11"
+async-trait = "0.1.88"
+tokio = { version = "1.45.1", features = ["full"] }

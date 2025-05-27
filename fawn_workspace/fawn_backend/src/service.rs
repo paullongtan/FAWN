@@ -1,86 +1,133 @@
-// use fawn_common::fawn_backend_api::NodeInfo;
+use async_trait::async_trait;
 use std::sync::Arc;
+use tokio::sync::Mutex;
+use tonic::{Response, Status};
+use crate::rpc_handler::BackendHandler;
+use fawn_common::fawn_backend_api::fawn_backend_service_server::FawnBackendService;
+use fawn_common::fawn_backend_api::{
+    PingRequest, 
+    PingResponse, 
+    GetRequest, 
+    GetResponse, 
+    StoreRequest, 
+    StoreResponse, 
+    UpdateSuccessorRequest, 
+    UpdateSuccessorResponse, 
+    PrepareForSplitRequest, 
+    PrepareForSplitResponse, 
+    MigrateDataRequest,
+    MigrateDataResponse};
+use fawn_common::err::FawnError;
 
-use fawn_common::types::NodeInfo;
-use fawn_common::err::{FawnError, FawnResult};
-use fawn_common::util::get_node_id;
-
-use crate::storage::logstore::LogStructuredStore;
-
-#[derive(Clone)]
 pub struct BackendService {
-    storage: Arc<LogStructuredStore>,
-    predecessor: Option<NodeInfo>,
-    prev_predecessor: Option<NodeInfo>,
-    successor: Option<NodeInfo>,
-    self_info: NodeInfo,
+    handler: Arc<Mutex<BackendHandler>>,
 }
 
 impl BackendService {
-    pub fn new(storage: Arc<LogStructuredStore>, address: &str) -> FawnResult<Self> {
-        let clean_addr = address.trim_start_matches("http://").trim_start_matches("https://");
-        let back = clean_addr.parse::<std::net::SocketAddr>()
-                .map_err(|e| FawnError::SystemError(format!("Invalid address format: {}", e)))?;
-        let id = get_node_id(&back.ip().to_string(), back.port() as u32);
+    pub fn new(handler: BackendHandler) -> Self {
+        Self { handler: Arc::new(Mutex::new(handler)) }
+    }
+}
 
-        Ok(Self {
-            storage,
-            predecessor: None,
-            prev_predecessor: None,
-            successor: None,
-            self_info: NodeInfo::new(back.ip().to_string(), back.port() as u32, id),
-        })
+#[async_trait]
+impl FawnBackendService for BackendService {
+    async fn ping(
+        &self,
+        request: tonic::Request<PingRequest>,
+    ) -> std::result::Result<tonic::Response<PingResponse>, tonic::Status>{
+        let self_info = self.handler.lock().await.handle_ping().map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(PingResponse {
+            node_info: Some(self_info.into()),
+        }))
     }
 
-    pub fn handle_ping(&self) -> FawnResult<NodeInfo> {
-        Ok(self.self_info.clone())
+    async fn get_value(
+        &self,
+        request: tonic::Request<GetRequest>,
+    ) -> std::result::Result<tonic::Response<GetResponse>, tonic::Status>{
+        let key_id = request.into_inner().key_id;
+        let value = self.handler.lock().await.handle_get_value(key_id).map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(GetResponse {
+            value,
+            success: true,
+        }))
     }
 
-    pub fn handle_get_value(&self, key_id: u32) -> FawnResult<Vec<u8>> {
-        match self.storage.get_hashed(key_id) {
-            Ok(Some(value)) => {
-                Ok(value)
-            }
-            Ok(None) => {
-                Ok(vec![])
+    async fn store_value(
+        &self,
+        request: tonic::Request<StoreRequest>,
+    ) -> std::result::Result<tonic::Response<StoreResponse>, tonic::Status>{
+        let inner = request.into_inner();
+        let key_id = inner.key_id;
+        let value = inner.value;
+        let success = self.handler.lock().await.handle_store_value(key_id, value).map_err(|e| Status::internal(e.to_string()))?  ;
+        Ok(Response::new(StoreResponse {
+            success,
+        }))
+    }
+
+    async fn update_successor(
+        &self,
+        request: tonic::Request<UpdateSuccessorRequest>,
+    ) -> std::result::Result<
+        tonic::Response<UpdateSuccessorResponse>,
+        tonic::Status,
+    >{
+        let successor_info = request.into_inner().successor_info.ok_or_else(|| Status::invalid_argument("successor_info is required"))?;
+        let successor_info = fawn_common::types::NodeInfo::from(successor_info);
+        let success = self.handler.lock().await.handle_update_successor(&successor_info).await.map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(UpdateSuccessorResponse {
+            success,
+        }))
+    }
+    async fn prepare_for_split(
+        &self,
+        request: tonic::Request<PrepareForSplitRequest>,
+    ) -> std::result::Result<
+        tonic::Response<PrepareForSplitResponse>,
+        tonic::Status,
+    >{
+        let new_predecessor_info = request.into_inner().new_predecessor_info.ok_or_else(|| Status::invalid_argument("new_predecessor_info is required"))?;
+        let new_predecessor_info = fawn_common::types::NodeInfo::from(new_predecessor_info);
+        let success = self.handler.lock().await.handle_prepare_for_split(&new_predecessor_info).await.map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(PrepareForSplitResponse {
+            success,
+        }))
+    }
+    async fn migrate_data(
+        &self,
+        request: tonic::Request<MigrateDataRequest>,
+    ) -> std::result::Result<
+        tonic::Response<MigrateDataResponse>,
+        tonic::Status,
+    >{
+        let request_node_info = request.into_inner().new_predecessor_info.ok_or_else(|| Status::invalid_argument("new_predecessor_info is required"))?;
+        let request_node_info = fawn_common::types::NodeInfo::from(request_node_info);
+        let service = self.handler.lock().await;
+        let result = service.handle_migrate_data(&request_node_info).await;
+        match result {
+            Ok(success) => {
+                Ok(Response::new(MigrateDataResponse {
+                    success,
+                }))
             }
             Err(e) => {
-                Err(Box::new(FawnError::SystemError(format!("Failed to get value due to storage error: {}", e))))
+                if let Some(fawn_err) = e.downcast_ref::<FawnError>() {
+                    match fawn_err {
+                        FawnError::InvalidRequest(msg) => {
+                            Err(Status::invalid_argument(msg))
+                        }
+                        FawnError::SystemError(msg) => {
+                            Err(Status::internal(msg))
+                        }
+                        _ => {
+                            Err(Status::internal(e.to_string()))
+                        }
+                    }
+                } else {
+                    Err(Status::internal(e.to_string()))
+                }
             }
         }
-    }
-
-    pub fn handle_store_value(&self, key_id: u32, value: Vec<u8>) -> FawnResult<bool> {
-        match self.storage.put_hashed(key_id, value) {
-            Ok(()) => {
-                Ok(true)
-            }
-            Err(e) => {
-                Err(Box::new(FawnError::SystemError(format!("Failed to store value due to storage error: {}", e))))
-            }
-        }
-    }
-
-    pub fn handle_update_successor(&mut self, successor: &NodeInfo) -> FawnResult<bool> {
-        self.successor = Some(successor.clone());
-        Ok(true)
-    }
-
-    pub fn handle_prepare_for_split(&mut self, predecessor: &NodeInfo) -> FawnResult<bool> {
-        self.prev_predecessor = self.predecessor.clone();
-        self.predecessor = Some(predecessor.clone());
-        Ok(true)
-    }
-
-    pub fn handle_migrate_data(&self, predecessor: &NodeInfo) -> FawnResult<bool> {
-        let low_id = self.prev_predecessor.as_ref().map(|info| info.id).unwrap_or(0);
-        let high_id = self.self_info.id;
-        let migrate_data_iterator = self.storage.iter_range(low_id, high_id)?;
-        for (key_id, value) in migrate_data_iterator {
-            let key_id = get_key_id(key);
-            let value = value.unwrap_or_default();
-            self.storage.put_hashed(key_id, value)?;
-        }
-        Ok(true)
     }
 }
