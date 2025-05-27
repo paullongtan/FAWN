@@ -5,6 +5,7 @@ TODO:
 
 use super::segment::{SegmentInfo, SegmentWriter, SegmentReader};
 use super::record::{self, Record, RecordFlags};
+use std::collections::HashSet;
 use std::{
     fs, io::{self, Write}, os::unix::fs::FileExt, path::PathBuf, sync::{Mutex, RwLock}, time::{Duration, Instant}
 };
@@ -245,6 +246,7 @@ impl LogStructuredStore {
         let active_seg = super::segment::SegmentReader::open(meta)?;
 
         // collect matches from active + sealed
+        let mut seen: HashSet<u32> = HashSet::new(); // only keep the first occurrence of each hash
         let mut items = Vec::<(Vec<u8>, Vec<u8>)>::new();
 
         // scan the active segment first
@@ -253,6 +255,7 @@ impl LogStructuredStore {
             let buf = active_seg.read_record_bytes(off)?;
             let rec = super::record::Record::decode(&mut &buf[..])?;
             if rec.flags == super::record::RecordFlags::Put {
+                seen.insert(h);
                 items.push((rec.key.to_vec(), rec.value.to_vec()));
             }
         }
@@ -264,6 +267,7 @@ impl LogStructuredStore {
                 let buf = seg.read_record_bytes(off)?;
                 let rec = super::record::Record::decode(&mut &buf[..])?;
                 if rec.flags == super::record::RecordFlags::Put {
+                    seen.insert(h);
                     items.push((rec.key.to_vec(), rec.value.to_vec()));
                 }
             }
