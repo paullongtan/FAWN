@@ -11,6 +11,7 @@ use std::{
 
 const FLUSH_EVERY: Duration = Duration::from_secs(5); // flush every 5 seconds
 const MAX_SEG_SIZE: u32 = 4 * 1024 * 1024; // 4 MiB max segment size
+const EMPTY_KEY: &[u8] = b""; // empty key for raw hash operations
 
 pub struct LogStructuredStore {
     dir:           PathBuf,
@@ -155,10 +156,21 @@ impl LogStructuredStore {
         self.check_periodic_flush(&mut *writer)
     }
 
-    /// Store a key that is already the 32-bit hash.
+    /// Let user directly put a record using a hashed key using their own hash function.
     pub fn put_hashed(&self, hashed_key: u32, value: Vec<u8>) -> io::Result<()> {
-        // convert the u32 hashed key into bytes array as the 4-byte representation of the key
-        self.put(key_bytes(hashed_key).to_vec(), value)
+        let key = EMPTY_KEY; // we don't use the key here, just the hash
+        let len_needed = super::record::FIXED_HDR + key.len() + value.len() + 4; // 4 for CRC32
+        let mut writer = self.active.lock().unwrap();
+
+        // check if we need to roll the segment
+        if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
+            self.roll_segment(&mut *writer)?;
+        }
+
+        // append the record
+        writer.append_put_raw(hashed_key, &value)?;
+
+        self.check_periodic_flush(&mut *writer)
     }
 
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
@@ -177,7 +189,19 @@ impl LogStructuredStore {
     }
 
     pub fn delete_hashed(&self, hashed_key: u32) -> io::Result<()> {
-        self.delete(&key_bytes(hashed_key))
+        let key = EMPTY_KEY; // we don't use the key here, just the hash
+        let len_needed = super::record::FIXED_HDR + key.len() + 4; // 4 for CRC32
+        let mut writer = self.active.lock().unwrap();
+
+        // check if we need to roll the segment
+        if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
+            self.roll_segment(&mut *writer)?;
+        }
+        
+        // append the delete record
+        writer.append_delete_raw(hashed_key)?;
+
+        self.check_periodic_flush(&mut *writer)
     }
 
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
@@ -200,7 +224,22 @@ impl LogStructuredStore {
     }
 
     pub fn get_hashed(&self, hashed_key: u32) -> io::Result<Option<Vec<u8>>> {
-        self.get(&key_bytes(hashed_key))
+        let key = EMPTY_KEY; // we don't use the key here, just the hash
+
+        // search in the active segment first
+        if let Some(value) = self.active.lock().unwrap().lookup_in_mem(hashed_key, key)? {
+            return Ok(value);
+        }
+
+        // then search in the sealed segments from newest to oldest
+        for reader in self.sealed.read().unwrap().iter() {
+            if let Some(value) = reader.lookup(hash, key)? {
+                return Ok(Some(value));
+            }
+        }
+
+        // not found
+        Ok(None)
     }
 
     // Flush the active segment writer's footer to disk.

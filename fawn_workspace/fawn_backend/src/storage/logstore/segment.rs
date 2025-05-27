@@ -122,6 +122,34 @@ impl SegmentWriter {
         Ok(())
     }
 
+    pub fn append_put_raw(&mut self, hash: u32, key: &[u8], val: &[u8]) -> io::Result<()> {
+        self.append_generic_raw(hash, key, val, RecordFlags::Put)
+    }
+
+    pub fn append_delete_raw(&mut self, hash: u32, key: &[u8]) -> io::Result<()> {
+        self.append_generic_raw(hash, key, &[], RecordFlags::Delete)
+    }
+
+    fn append_generic_raw(&mut self, hash: u32, key: &[u8], val: &[u8], flags: RecordFlags) -> io::Result<()> {
+        let rec = Record { flags, key, value: val, hash32: hash };
+
+        // rollover guard (caller should roll segment if needed)
+        if self.offset + rec.encoded_len() as u32 > self.max_size {
+            return Err(io::Error::new(io::ErrorKind::Other, "Segment size limit exceeded"));
+        }
+
+        // encode into temp buf
+        let mut buf = Vec::with_capacity(rec.encoded_len());
+        rec.encode(&mut buf)?;
+
+        // write & update book-keeping
+        self.log_fd.write_all(&buf)?;
+        self.footer_buf.push((hash, self.offset));
+        self.in_mem_idx.insert(hash, self.offset);
+        self.offset += buf.len() as u32;
+        Ok(())
+    }
+
     /// Fast in-memory lookup while the segment is still open.
     /// it looks up the hash32 in the in-memory index,
     /// then reads the record at the offset, decodes it, and checks the key.
