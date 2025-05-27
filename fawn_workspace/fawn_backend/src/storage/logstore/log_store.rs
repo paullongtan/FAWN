@@ -3,7 +3,8 @@ TODO:
 - Compaction work not implemented yet. (placeholder only)
 */
 
-use crate::segment::{SegmentInfo, SegmentWriter, SegmentReader};
+use super::segment::{SegmentInfo, SegmentWriter, SegmentReader};
+use super::record::{self, Record, RecordFlags};
 use std::{
     fs, io::{self, Write}, os::unix::fs::FileExt, path::PathBuf, sync::{Mutex, RwLock}, time::{Duration, Instant}
 };
@@ -20,7 +21,7 @@ pub struct LogStructuredStore {
 }
 
 /// Rebuild the footer for a segment by reading the log file and writing the footer file.
-fn rebuild_footer(meta: &crate::segment::SegmentInfo) -> io::Result<()> {
+fn rebuild_footer(meta: &super::segment::SegmentInfo) -> io::Result<()> {
     let fd = fs::File::open(&meta.log_path)?;
     let mut off = 0u32; // offset in the log file
     let mut footer = Vec::<(u32, u32)>::new(); // (hash32, offset)
@@ -140,7 +141,7 @@ impl LogStructuredStore {
     }
 
     pub fn put(&self, key: Vec<u8>, val: Vec<u8>) -> io::Result<()> {
-        let len_needed = crate::record::FIXED_HDR + key.len() + val.len() + 4; // 4 for CRC32
+        let len_needed = super::record::FIXED_HDR + key.len() + val.len() + 4; // 4 for CRC32
         let mut writer = self.active.lock().unwrap();
 
         // check if we need to roll the segment
@@ -161,7 +162,7 @@ impl LogStructuredStore {
     }
 
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
-        let len_needed = crate::record::FIXED_HDR + key.len() + 4; // 4 for CRC32
+        let len_needed = super::record::FIXED_HDR + key.len() + 4; // 4 for CRC32
         let mut writer = self.active.lock().unwrap();
 
         // check if we need to roll the segment
@@ -180,7 +181,7 @@ impl LogStructuredStore {
     }
 
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let hash = crate::record::hash32(key);
+        let hash = super::record::hash32(key);
 
         // search in the active segment first
         if let Some(value) = self.active.lock().unwrap().lookup_in_mem(hash, key)? {
@@ -262,9 +263,9 @@ impl LogStructuredStore {
                 if !(lo < h && h <= hi) { continue; }
 
                 let buf = seg.read_record_bytes(off)?;
-                let rec = crate::record::Record::decode(&mut &buf[..])?;
+                let rec = super::record::Record::decode(&mut &buf[..])?;
 
-                if rec.flags == crate::record::RecordFlags::Put {
+                if rec.flags == super::record::RecordFlags::Put {
                     items.push((rec.key.to_vec(), rec.value.to_vec()));
                 }
             }
@@ -349,15 +350,15 @@ mod tests {
         assert!(!rdr.meta.ftr_path.exists(), "Footer file should be deleted");
 
         // Rebuild the footer from the log file
-        crate::log_store::rebuild_footer(&rdr.meta).unwrap();
+        rebuild_footer(&rdr.meta).unwrap();
 
         // footer should now exist
         assert!(rdr.meta.ftr_path.exists(), "Footer file should be rebuilt");
 
         // Reopen the segment and verify lookups
         let rdr2 = SegmentReader::open(rdr.meta.clone()).unwrap();
-        assert!(rdr2.lookup(crate::record::hash32(b"alpha"), b"alpha").unwrap().is_none());
-        assert_eq!(rdr2.lookup(crate::record::hash32(b"beta"), b"beta").unwrap(), Some(b"two".to_vec()));
+        assert!(rdr2.lookup(super::record::hash32(b"alpha"), b"alpha").unwrap().is_none());
+        assert_eq!(rdr2.lookup(super::record::hash32(b"beta"), b"beta").unwrap(), Some(b"two".to_vec()));
     }
 
     #[test]

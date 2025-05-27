@@ -8,11 +8,11 @@ use std::{
 };
 use memmap2::Mmap;
 
-use crate::record::{self, Record, RecordFlags};
+use super::record::{self, Record, RecordFlags};
 
 /// Small metadata carrier shared by writer & reader.
 #[derive(Clone, Debug)]
-pub(crate) struct SegmentInfo {
+pub struct SegmentInfo {
     pub id:       u64,
     pub log_path: PathBuf,
     pub ftr_path: PathBuf,
@@ -28,7 +28,7 @@ impl SegmentInfo {
     }
 }
 
-pub(crate) struct SegmentWriter {
+pub struct SegmentWriter {
     pub meta:       SegmentInfo,
     log_fd:         File,
     footer_buf:     Vec<(u32 /*hash32*/, u32 /*offset32*/ )>, // unsorted until flushed
@@ -206,7 +206,7 @@ impl SegmentWriter {
     }
 }
 
-pub(crate) struct SegmentReader {
+pub struct SegmentReader {
     pub meta:   SegmentInfo,
     log_fd:     File,
     footer_mm:  Mmap,
