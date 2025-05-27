@@ -7,7 +7,7 @@ use std::{
 
 use sha2::Digest;
 use anyhow::{anyhow, Result};
-use fawn_logstore::log_store::LogStructuredStore;
+use crate::storage::logstore::LogStructuredStore;
 use serde::{Deserialize, Serialize};
 
 const CHUNK_SIZE: usize = 256 * 1024; // 256 KiB "record" size

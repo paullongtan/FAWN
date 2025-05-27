@@ -247,8 +247,10 @@ name = "fawn_backend"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byteorder",
+ "crc32fast",
  "fawn_common",
- "fawn_logstore",
+ "memmap2",
  "serde",
  "serde_json",
  "sha2",
@@ -282,17 +284,6 @@ dependencies = [
  "fawn_common",
  "tokio",
  "tonic",
-]
-
-[[package]]
-name = "fawn_logstore"
-version = "0.1.0"
-dependencies = [
- "byteorder",
- "crc32fast",
- "memmap2",
- "sha2",
- "tempfile",
 ]
 
 [[package]]
