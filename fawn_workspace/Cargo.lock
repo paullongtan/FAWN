@@ -328,7 +328,8 @@ dependencies = [
  "prost 0.12.6",
  "serde",
  "serde_json",
- "tonic 0.11.0",
+ "tokio",
+ "tonic",
  "tonic-build",
 ]
 
@@ -336,7 +337,10 @@ dependencies = [
 name = "fawn_frontend"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "fawn_common",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -999,9 +1003,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.12"
+version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "928fca9cf2aa042393a8325b9ead81d2f0df4cb12e1e24cef072922ccd99c5af"
+checksum = "d2f103c6d277498fbceb16e84d317e2a400f160f46904d5f5410848c829511a3"
 dependencies = [
  "bitflags 2.9.1",
 ]

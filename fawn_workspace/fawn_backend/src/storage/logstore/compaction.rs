@@ -1,4 +1,4 @@
-use crate::segment::{SegmentReader};
+use super::segment::{SegmentReader};
 use std::io;
 use std::path::PathBuf;
 
