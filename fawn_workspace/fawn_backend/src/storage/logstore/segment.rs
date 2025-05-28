@@ -1,8 +1,3 @@
-/*
-TODO:
-- replace linear scan of footer with binary search
-*/
-
 use std::{
     collections::HashMap, fs::{File, OpenOptions}, io::{self, Write}, os::unix::fs::FileExt, path::{Path, PathBuf}
 };
@@ -295,7 +290,7 @@ impl SegmentReader {
 
     /// Linear scan footer to find the hash32. (replace with binary search later)
     /// Binary-search footer → single `pread`.
-    pub fn lookup(&self, hash: u32, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    pub fn _lookup_linear(&self, hash: u32, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let slots = self.footer_mm.len() / 8; // each entry is 8 bytes (hash32 + offset32)
 
         // scan the footer in reverse order (newest to oldest since the latest record for a key determines its current state)
@@ -326,6 +321,60 @@ impl SegmentReader {
             }
         }
         Ok(None) // not found
+    }
+
+    // Binary search for the hash32 in the footer.
+    pub fn lookup(&self, hash: u32, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let slots = self.footer_mm.len() / 8; // 8-byte entries
+        if slots == 0 { return Ok(None); }
+
+        // binary-search for right-most slot
+        let mut lo = 0usize;
+        let mut hi = slots; // exclusive upper bound
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let h   = u32::from_le_bytes(self.footer_mm[mid*8 .. mid*8+4].try_into().unwrap());
+            if h <= hash {
+                lo = mid + 1; // search right half
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == 0 { return Ok(None); } // all hashes > target
+
+        let mut idx = lo - 1; // last slot whose h <= hash
+        // check if it is an exact match
+        let h_at = u32::from_le_bytes(self.footer_mm[idx*8 .. idx*8+4].try_into().unwrap());
+        if h_at != hash { return Ok(None); } // hash not present
+
+        // walk backwards to newest matching record 
+        loop {
+            let slot = &self.footer_mm[idx*8 .. idx*8+8];
+            let offset = u32::from_le_bytes(slot[4..8].try_into().unwrap());
+
+            // read record header length
+            let mut len_buf = [0u8; 4];
+            self.log_fd.read_exact_at(&mut len_buf, offset as u64)?;
+            let rec_len = u32::from_le_bytes(len_buf) as usize + 4;
+
+            // read full record
+            let mut buf = vec![0u8; rec_len];
+            self.log_fd.read_exact_at(&mut buf, offset as u64)?;
+            let rec = super::record::Record::decode(&mut &buf[..])?;
+
+            if rec.key == key {
+                return Ok(match rec.flags {
+                    super::record::RecordFlags::Put    => Some(rec.value.to_vec()),
+                    super::record::RecordFlags::Delete => None,
+                });
+            }
+            if idx == 0 { break; }
+            idx -= 1;
+
+            let h_prev = u32::from_le_bytes(self.footer_mm[idx*8 .. idx*8+4].try_into().unwrap());
+            if h_prev != hash { break; } // crossed into different hash
+        }
+        Ok(None)
     }
 
     /// Iterate over (hash32, offset32) pairs stored in the footer.
