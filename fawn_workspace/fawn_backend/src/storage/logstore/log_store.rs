@@ -8,6 +8,7 @@ use super::record::{self, Record, RecordFlags};
 use std::{
     fs, io::{self, Write}, os::unix::fs::FileExt, path::PathBuf, sync::{Mutex, RwLock}, time::{Duration, Instant}
 };
+use std::collections::HashSet;
 
 const FLUSH_EVERY: Duration = Duration::from_secs(5); // flush every 5 seconds
 const MAX_SEG_SIZE: u32 = 4 * 1024 * 1024; // 4 MiB max segment size
@@ -243,16 +244,31 @@ impl LogStructuredStore {
 
         // open a read-only view of the active segment
         let active_seg = super::segment::SegmentReader::open(meta)?;
-
         // collect matches from active + sealed
-        let mut items = Vec::<(u32, Vec<u8>)>::new();
+        let mut seen: HashSet<u32> = HashSet::new(); // only keep the first occurrence of each hash
+        let mut items = Vec::<(u32, Vec<u8>)>::new(); // [hash32, value(in bytes)]
+
+        // helper closure for ring range check
+        // if (lo < hi): range is (lo, hi]
+        // if (lo > hi): range is (lo, MAX] U [0, hi]
+        let in_range = |h: u32| -> bool {
+            if lo < hi {
+                lo < h && h <= hi
+            } else if lo > hi {
+                h > lo || h <= hi
+            } else {
+                false // lo == hi, no valid range
+            }
+        };
 
         // scan the active segment first
         for (h, off) in active_seg.footer_pairs() {
-            if !(lo < h && h <= hi) { continue; }
+            if !in_range(h) { continue; }
+            if seen.contains(&h) { continue; } // skip if already seen
             let buf = active_seg.read_record_bytes(off)?;
             let rec = super::record::Record::decode(&mut &buf[..])?;
             if rec.flags == super::record::RecordFlags::Put {
+                seen.insert(rec.hash32);
                 items.push((rec.hash32, rec.value.to_vec()));
             }
         }
@@ -260,7 +276,8 @@ impl LogStructuredStore {
         // scan the sealed segments
         for seg in self.sealed.read().unwrap().iter() {
             for (h, off) in seg.footer_pairs() {
-                if !(lo < h && h <= hi) { continue; }
+                if !in_range(h) { continue; }
+                if seen.contains(&h) { continue; } // skip if already seen
                 let buf = seg.read_record_bytes(off)?;
                 let rec = super::record::Record::decode(&mut &buf[..])?;
                 if rec.flags == super::record::RecordFlags::Put {
@@ -571,6 +588,51 @@ mod tests {
         //     .collect();
 
         // assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn test_iter_range_ring() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = LogStructuredStore::open(temp_dir.path()).unwrap();
+
+        // insert records with known hash ids
+        let keys = vec!["a", "b", "c", "d"];    
+        let values = vec![b"va", b"vb", b"vc", b"vd"];
+
+        // Insert records with known hash ids
+        let mut ids = Vec::new();
+        for (k, v) in keys.iter().zip(values.iter()) {
+            let id = get_key_id(k);
+            ids.push(id);
+            store.put(id, v.to_vec()).unwrap();
+        }
+
+        println!("Inserted records with IDs: {:?}", ids);
+
+        // Sort ids to pick a range
+        let mut sorted_ids = ids.clone();
+        sorted_ids.sort_unstable();
+        println!("Sorted IDs: {:?}", sorted_ids);
+
+        // linear range: (sorted_ids[0], sorted_ids[2]], should include sorted_ids[1] and sorted_ids[2] 
+        let results: Vec<_> = store.iter_range(sorted_ids[0], sorted_ids[2]).unwrap().collect();
+        println!("Results in linear range: {:?}", results);
+        assert_eq!(results.len(), 2); // should find sorted_ids[1] and sorted_ids[2] 
+        assert!(results.iter().any(|(id, _)| *id == sorted_ids[1])); // sorted_ids[1] should be found
+        assert!(results.iter().any(|(id, _)| *id == sorted_ids[2])); // sorted_ids[2] should be found
+    
+        // ring range: (sorted_ids[2], sorted_ids[0]], should include sorted_ids[3], sorted_ids[0], sorted_ids[1]
+        let results: Vec<_> = store.iter_range(sorted_ids[2], sorted_ids[1]).unwrap().collect();
+        println!("Results in ring range: {:?}", results);
+        assert_eq!(results.len(), 3); // should find sorted_ids[3], sorted_ids[0], sorted_ids[1]
+        assert!(results.iter().any(|(id, _)| *id == sorted_ids[3])); // sorted_ids[3] should be found
+        assert!(results.iter().any(|(id, _)| *id == sorted_ids[0])); // sorted_ids[0] should be found
+        assert!(results.iter().any(|(id, _)| *id == sorted_ids[1])); // sorted_ids[1] should be found
+
+        // empty range: (sorted_ids[0], sorted_ids[0]], should be empty
+        let results: Vec<_> = store.iter_range(sorted_ids[0], sorted_ids[0]).unwrap().collect();
+        println!("Results in empty range: {:?}", results);
+        assert!(results.is_empty(), "Empty range should return no results");
     }
 
 }
