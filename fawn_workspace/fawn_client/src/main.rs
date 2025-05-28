@@ -1,6 +1,5 @@
 use clap::Parser;
 
-
 mod storage;
 mod client;
 mod client_factory;
@@ -22,7 +21,7 @@ struct Options {
     address: String,
 
     /// Addresses of frontend servers
-    #[clap(short, long, value_delimiter = ',', default_values = &["127.0.0.1:7799", "127.0.0.1:7800"])]
+    #[clap(short, long, value_delimiter = ',', default_values = &["127.0.0.1:30010", "127.0.0.1:30011"])]
     frontends: Vec<String>,
 }
 
@@ -72,8 +71,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match tokens[0].to_lowercase().as_str() {
                     "put" if tokens.len() == 3 => {
                         let key = tokens[1];
-                        let file_path = std::path::Path::new(tokens[2]);
-                        match client.put(key, file_path).await {
+                        let filename = tokens[2];
+                        let path = std::path::Path::new("test/put").join(filename);
+                        match client.put(key, &path).await {
                             Ok(_) => println!("Successfully uploaded '{}'", tokens[2]),
                             Err(e) => eprintln!("Failed to upload '{}': {}", tokens[2], e),
                         }
@@ -90,11 +90,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(e) => eprintln!("Failed to delete '{}': {}", tokens[1], e),
                         }
                     }
+                    // automatically puts into test_data directory
                     "generate" if tokens.len() == 3 => {
-                        let path = std::path::Path::new(tokens[1]);
+                        let filename = tokens[1];
+                        let path = std::path::Path::new("test/put").join(filename);
                         match tokens[2].parse::<usize>() {
                             Ok(num_bytes) => {
-                                match generate_file(path, num_bytes) {
+                                match generate_file(&path, num_bytes) {
                                     Ok(_) => println!("Generated {} bytes at {:?}", num_bytes, path),
                                     Err(e) => eprintln!("Failed to generate file: {}", e),
                                 }

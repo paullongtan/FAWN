@@ -2,7 +2,7 @@ use crate::storage::Storage;
 use async_trait::async_trait;
 use fawn_common::err::{FawnError, FawnResult};
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use sha2::{Sha256, Digest};
 use std::path::Path;
 use std::string;
@@ -31,7 +31,8 @@ impl FawnClient {
     }
 }
     async fn put_bytes(&self, key: &str, value: Vec<u8>) -> FawnResult<()> {
-        let mut frontend = FawnFrontendServiceClient::connect(self.base_url.clone()).await?;
+        let connection = format!("http://{}", self.frontends[0].clone());
+        let mut frontend = FawnFrontendServiceClient::connect(connection).await?;
         // Assuming you're calling a gRPC `put_value` method on the frontend
         let body = PutRequest {
             user_key: key.to_string(),
@@ -41,6 +42,16 @@ impl FawnClient {
         let response = frontend.put_value(request).await?;
         // let bool = response.into_inner()
         Ok(())
+    }
+    async fn get_bytes(&self, key: &str) -> FawnResult<Vec<u8>> {
+        let connection = format!("http://{}", self.frontends[0].clone());
+        let mut frontend = FawnFrontendServiceClient::connect(connection).await?;
+        let body = GetRequest {
+            user_key: key.to_string(),
+        };
+        let request = Request::new(body);
+        let response = frontend.get_value(request).await?;
+        Ok(response.into_inner().value) // Assuming the response has a `value` field
     }
 }
 // Implementation of put_file as an inherent method, not part of the trait
@@ -97,11 +108,58 @@ impl Storage for  FawnClient {
         Ok(())
     }
 
-    async fn get(&self, key: &str) -> FawnResult<()> {
+    async fn get(&self, key: &str) -> FawnResult<Vec<u8>> {
         println!("[GET] key: '{}'", key);
-        // Ok(Some("mocked_value".to_string()))
-        Ok(())
+        
+        // Retrieve manifest
+        let manifest_key = format!("{}.manifest.json", key);
+        let manifest_bytes = self.get_bytes(&manifest_key).await?;
+        if manifest_bytes.is_empty() {
+            return Err(Box::new(FawnError::KeyNotFound(key.to_string())));
+        }
+        let manifest: FileManifest = serde_json::from_slice(&manifest_bytes)?;
+        
+        println!("[GET] Retrieved manifest: {} chunks, {} bytes", manifest.chunk_count, manifest.file_size);
+        
+        // Reconstruct the file
+        let mut file_data = Vec::with_capacity(manifest.file_size as usize);
+        let mut hasher = Sha256::new();
+        
+        for chunk_index in 0..manifest.chunk_count {
+            let chunk_key = format!("{}.chunk{}", key, chunk_index);
+            let chunk_data = self.get_bytes(&chunk_key).await?;
+            
+            hasher.update(&chunk_data);
+            file_data.extend_from_slice(&chunk_data);
+        }
+        
+        // Validate hash
+        let computed_hash = hasher.finalize();
+        if computed_hash.as_slice() != manifest.sha256 {
+            return Err(Box::new(FawnError::SystemError("File hash mismatch during reconstruction".to_string())));
+        }
+        
+        // Validate size
+        if file_data.len() != manifest.file_size as usize {
+            return Err(Box::new(FawnError::SystemError("File size mismatch during reconstruction".to_string())));
+        }
+        
+        // Create output directory if it doesn't exist
+        let output_dir = std::path::Path::new("test/get");
+        tokio::fs::create_dir_all(output_dir).await?;
+        
+        // Write to file in retrieved_data/
+        let output_path = output_dir.join(format!("{}.bin", key));
+        let mut output_file = File::create(&output_path).await?;
+        output_file.write_all(&file_data).await?;
+        output_file.flush().await?; // <-- This is critical
+        println!("[GET] File reconstructed and saved as: {:?}", output_path);
+
+        // Return the file data
+        Ok(file_data)
     }
+
+
 
     async fn delete(&self, key: &str) -> FawnResult<()> {
         println!("[DELETE] key: '{}'", key);
