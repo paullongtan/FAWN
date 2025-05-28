@@ -151,11 +151,16 @@ impl BackendServer {
         let response = response.into_inner();
         let successor_info = response.successor_info;
         let predecessor_info = response.predecessor_info;
+
         match predecessor_info {
             Some(predecessor_info) => {
-                // update the predecessor in the state
-                let predecessor_info = NodeInfo::from(predecessor_info);
-                *self.state.predecessor.write().await = predecessor_info.clone();
+
+                if predecessor_info.id != node_info.id {
+                    // update the predecessor in the state
+                    let predecessor_info = NodeInfo::from(predecessor_info);
+                    *self.state.predecessor.write().await = predecessor_info.clone();
+                }
+                
             }
             None => {}
         }
@@ -163,27 +168,27 @@ impl BackendServer {
         // request data migration from the successor
         match successor_info {
             Some(successor_info) => {
-                // update the successor in the state
-                let successor_info = NodeInfo::from(successor_info);
-                *self.state.successor.write().await = successor_info.clone();
+                if successor_info.id != node_info.id {
+                    // update the successor in the state
+                    let successor_info = NodeInfo::from(successor_info);
+                    *self.state.successor.write().await = successor_info.clone();
 
-                // request data migration from the successor
-                println!("Requesting data migration from successor: {:?}", successor_info.get_http_addr());
-                let mut successor_client = FawnBackendServiceClient::connect(successor_info.get_http_addr()).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
-                let request = MigrateDataRequest {
-                    new_predecessor_info: Some(node_info.clone().into()),
-                };
-                let response = successor_client.migrate_data(request).await.map_err(|e| FawnError::RpcError(format!("Failed to migrate data from successor: {}", e)))?;
-                let response = response.into_inner();
-                let migrate_success = response.success;
-                if !migrate_success {
-                    println!("Data migration failed");
-                    return Err(Box::new(FawnError::SystemError("Data migration failed".to_string())));
+                    // request data migration from the successor
+                    println!("Requesting data migration from successor: {:?}", successor_info.get_http_addr());
+                    let mut successor_client = FawnBackendServiceClient::connect(successor_info.get_http_addr()).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
+                    let request = MigrateDataRequest {
+                        new_predecessor_info: Some(node_info.clone().into()),
+                    };
+                    let response = successor_client.migrate_data(request).await.map_err(|e| FawnError::RpcError(format!("Failed to migrate data from successor: {}", e)))?;
+                    let response = response.into_inner();
+                    let migrate_success = response.success;
+                    if !migrate_success {
+                        println!("Data migration failed");
+                        return Err(Box::new(FawnError::SystemError("Data migration failed".to_string())));
+                    }
                 }
             }
-            None => {
-                println!("No successor, first node in ring");
-            }
+            None => {}
         }
 
         // finalize the join ring

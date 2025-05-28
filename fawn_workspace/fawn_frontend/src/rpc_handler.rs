@@ -15,10 +15,15 @@ pub async fn handle_request_join_ring(
     backend_manager: Arc<BackendManager>,
     new_node: NodeInfo,
 ) -> FawnResult<(NodeInfo, NodeInfo)> {
-    let successor = backend_manager.find_successor(new_node.id).await
-        .ok_or_else(|| Box::new(FawnError::NoBackendAvailable("no backend available".to_string())))?;
-    let predecessor = backend_manager.find_predecessor(new_node.id).await
-        .ok_or_else(|| Box::new(FawnError::NoBackendAvailable("no backend available".to_string())))?;
+    let successor = backend_manager.find_successor(new_node.id).await;
+    let predecessor = backend_manager.find_predecessor(new_node.id).await;
+
+    if successor.is_none() || predecessor.is_none() {
+        return Ok((new_node.clone(), new_node.clone()));
+    }
+
+    let successor = successor.unwrap();
+    let predecessor = predecessor.unwrap();
 
     // Notify the successor and predecessor of the new node
     let successor_addr = successor.get_http_addr();
@@ -66,6 +71,8 @@ pub async fn handle_finalize_join_ring(
             }
         }
     }
+
+    println!("Backend {} joined the ring successfully", new_node.get_http_addr());
 
     Ok(true)
 }
