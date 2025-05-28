@@ -1,0 +1,13 @@
+# Frontend Node Configuration
+this = 0
+
+[[fronts]]
+address = "127.0.0.1:7799"
+id = 0
+
+[[fronts]]
+address = "127.0.0.1:7800"
+id = 1
+
+[backend]
+address = "127.0.0.1:8080"

@@ -1,0 +1,21 @@
+# Backend Server Configuration
+
+# Directory where the log-structured storage will be kept
+storage_dir = "./data/backend_storage"
+
+# Address where this backend server will listen
+address = "127.0.0.1:8080"
+
+# List of frontend nodes that will connect to this backend
+[[fronts]]
+address = "127.0.0.1:7799"
+id = 0
+
+[[fronts]]
+address = "127.0.0.1:7800"
+id = 1
+
+# Add more frontend nodes as needed
+# [[fronts]]
+# address = "127.0.0.1:7801"
+# id = 2

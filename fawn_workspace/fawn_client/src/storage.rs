@@ -1,8 +1,11 @@
 use async_trait::async_trait;
+use std::path::Path;
+use fawn_common::err::FawnResult;
 
 #[async_trait]
 pub trait Storage: Send + Sync {
-    async fn put(&self, key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>>;
-    async fn get(&self, key: &str) -> Result<Option<String>, Box<dyn std::error::Error>>;
-    async fn delete(&self, key: &str) -> Result<(), Box<dyn std::error::Error>>;
+    async fn put(&self, key: &str, path: &Path) -> FawnResult<()>;
+    async fn get(&self, key: &str) -> FawnResult<()>;
+    async fn delete(&self, key: &str) -> FawnResult<()>;
 }
+
