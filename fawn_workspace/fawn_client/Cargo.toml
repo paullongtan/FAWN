@@ -5,3 +5,13 @@ edition = "2024"
 
 [dependencies]
 fawn_common = { path = "../fawn_common" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4.4", features = ["derive"] }
+rustyline = "10.0"
+async-trait = "0.1.88"
+sha2 = "0.10.9"
+serde = "1.0.219"
+serde_json = "1.0.140"
+base64 = "0.22.1"
+tonic = "0.11"
+rand = "0.8"
