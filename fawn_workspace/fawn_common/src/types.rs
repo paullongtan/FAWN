@@ -11,6 +11,12 @@ pub struct NodeInfo {
     pub id: u32,
 }
 
+pub struct MigrateInfo {
+    pub dest_info: NodeInfo,
+    pub start_id: u32,
+    pub end_id: u32,
+}
+
 impl NodeInfo {
     /// Creates a new NodeInfo instance
     pub fn new(ip: String, port: u32, id: u32) -> NodeInfo {
@@ -60,6 +66,46 @@ impl From<NodeInfo> for crate::fawn_backend_api::NodeInfo {
             ip: domain.ip,
             port: domain.port,
             id: domain.id,
+        }
+    }
+}
+
+impl From<crate::fawn_frontend_api::MigrateInfo> for MigrateInfo {
+    fn from(proto: crate::fawn_frontend_api::MigrateInfo) -> Self {
+        MigrateInfo {
+            dest_info: proto.dest_info.unwrap_or_default().into(),
+            start_id: proto.start_id,
+            end_id: proto.end_id,
+        }
+    }
+}
+
+impl From<MigrateInfo> for crate::fawn_frontend_api::MigrateInfo {
+    fn from(domain: MigrateInfo) -> Self {
+        crate::fawn_frontend_api::MigrateInfo {
+            dest_info: Some(domain.dest_info.into()),
+            start_id: domain.start_id,
+            end_id: domain.end_id,
+        }
+    }
+}
+
+impl From<crate::fawn_backend_api::MigrateInfo> for MigrateInfo {
+    fn from(proto: crate::fawn_backend_api::MigrateInfo) -> Self {
+        MigrateInfo {
+            dest_info: proto.dest_info.unwrap_or_default().into(),
+            start_id: proto.start_id,
+            end_id: proto.end_id,
+        }
+    }
+}
+
+impl From<MigrateInfo> for crate::fawn_backend_api::MigrateInfo {
+    fn from(domain: MigrateInfo) -> Self {
+        crate::fawn_backend_api::MigrateInfo {
+            dest_info: Some(domain.dest_info.into()),
+            start_id: domain.start_id,
+            end_id: domain.end_id,
         }
     }
 }

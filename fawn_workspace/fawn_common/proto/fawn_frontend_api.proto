@@ -3,6 +3,9 @@ syntax = "proto3";
 package fawn_frontend_api;
 
 service FawnFrontendService {
+    // request to join the ring
+    // returns the successor and predecessor of the new node
+    // also returns the migrate info for the new node to migrate data from the tails of chain that the new node will be in
     rpc RequestJoinRing (RequestJoinRingRequest) returns (RequestJoinRingResponse);
     rpc FinalizeJoinRing (FinalizeJoinRingRequest) returns (FinalizeJoinRingResponse);
     rpc NotifyBackendJoin(NotifyBackendJoinRequest) returns (NotifyBackendJoinResponse);
@@ -17,6 +20,12 @@ message NodeInfo {
     uint32 id = 3;
 }
 
+message MigrateInfo {
+    NodeInfo dest_info = 1;
+    uint32 start_id = 2;
+    uint32 end_id = 3;
+}
+
 message RequestJoinRingRequest {
     NodeInfo node_info = 1;
 }
@@ -24,6 +33,7 @@ message RequestJoinRingRequest {
 message RequestJoinRingResponse {
     NodeInfo successor_info = 1;
     NodeInfo predecessor_info = 2;
+    repeated MigrateInfo migrate_info = 3;
 }
 
 message FinalizeJoinRingRequest {

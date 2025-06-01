@@ -4,11 +4,31 @@ package fawn_backend_api;
 
 service FawnBackendService {
     rpc Ping (PingRequest) returns (PingResponse);
+    // get logical timestamp from the backend
+    // the logical timestamp can be a non-decreasing logical timestamp stored in the local backend
+    // the timestamp should increment by 1 every time a new value is stored in the local backend
+    // for same store request, the timestamp should be the same when passing down the chain
+    // should ensure that is timestamp is decided by the head of the chain such that new joining node can catch up with the chain after pre-copy stage
+    rpc GetTimestamp (GetTimestampRequest) returns (GetTimestampResponse); 
     rpc GetValue (GetRequest) returns (GetResponse);
-    rpc StoreValue (StoreRequest) returns (StoreResponse);
-    rpc UpdateSuccessor (UpdateSuccessorRequest) returns (UpdateSuccessorResponse);
-    rpc PrepareForSplit (PrepareForSplitRequest) returns (PrepareForSplitResponse);
-    rpc MigrateData (MigrateDataRequest) returns (MigrateDataResponse);
+    // store value down the chain
+    // new field: timestamp,pass_count
+    // the backend should be responsible for passing the value down the chain for pass_count times
+    // ex: for pass_count = 3, the backend should pass the value to the successor 3 times
+    // for pass_count = 0, the backend should not pass the value down the chain
+    rpc StoreValue (StoreRequest) returns (StoreResponse); 
+    // update successor in the state
+    rpc UpdateSuccessor (UpdateSuccessorRequest) returns (UpdateSuccessorResponse); 
+    // update predecessor in the state
+    rpc UpdatePredecessor (UpdatePredecessorRequest) returns (UpdatePredecessorResponse); 
+    // migrate data to destination node (does NOT delete the data from the source node)
+    // the destination node need not be the client sending the request
+    // used for both data replication when storing value or when a node crashes
+    rpc MigrateData (MigrateDataRequest) returns (MigrateDataResponse); 
+
+    // NOTE: prepare for split call is deprecated
+    // the joining node should be responsible for requesting data from other nodes by calling the migrate data rpc
+    // src no longer checks the requestor info in the migrate data request
 }
 
 message NodeInfo {
@@ -17,11 +37,24 @@ message NodeInfo {
     uint32 id = 3;
 }
 
+message MigrateInfo {
+    NodeInfo dest_info = 1;
+    uint32 start_id = 2;
+    uint32 end_id = 3;
+}
+
 message PingRequest {
 }
 
 message PingResponse {
     NodeInfo node_info = 1;
+}
+
+message GetTimestampRequest {
+}
+
+message GetTimestampResponse {
+    uint64 timestamp = 1;
 }
 
 message GetRequest {
@@ -36,6 +69,8 @@ message GetResponse {
 message StoreRequest {
     uint32 key_id = 1;
     bytes value = 2;
+    uint64 timestamp = 3;
+    uint32 pass_count = 4; // how many times the value needs to be passed down the chain
 }
 
 message StoreResponse {
@@ -50,16 +85,16 @@ message UpdateSuccessorResponse {
     bool success = 1;
 }
 
-message PrepareForSplitRequest {
-    NodeInfo new_predecessor_info = 1;
+message UpdatePredecessorRequest {
+    NodeInfo predecessor_info = 1;
 }
 
-message PrepareForSplitResponse {
+message UpdatePredecessorResponse {
     bool success = 1;
 }
 
 message MigrateDataRequest {
-    NodeInfo new_predecessor_info = 1;
+    MigrateInfo migrate_info = 1;
 }
 
 message MigrateDataResponse {

@@ -11,12 +11,31 @@ pub struct NodeInfo {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MigrateInfo {
+    #[prost(message, optional, tag = "1")]
+    pub dest_info: ::core::option::Option<NodeInfo>,
+    #[prost(uint32, tag = "2")]
+    pub start_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub end_id: u32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PingRequest {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PingResponse {
     #[prost(message, optional, tag = "1")]
     pub node_info: ::core::option::Option<NodeInfo>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetTimestampRequest {}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetTimestampResponse {
+    #[prost(uint64, tag = "1")]
+    pub timestamp: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -39,6 +58,11 @@ pub struct StoreRequest {
     pub key_id: u32,
     #[prost(bytes = "vec", tag = "2")]
     pub value: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub timestamp: u64,
+    /// how many times the value needs to be passed down the chain
+    #[prost(uint32, tag = "4")]
+    pub pass_count: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -60,13 +84,13 @@ pub struct UpdateSuccessorResponse {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PrepareForSplitRequest {
+pub struct UpdatePredecessorRequest {
     #[prost(message, optional, tag = "1")]
-    pub new_predecessor_info: ::core::option::Option<NodeInfo>,
+    pub predecessor_info: ::core::option::Option<NodeInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PrepareForSplitResponse {
+pub struct UpdatePredecessorResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
@@ -74,7 +98,7 @@ pub struct PrepareForSplitResponse {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrateDataRequest {
     #[prost(message, optional, tag = "1")]
-    pub new_predecessor_info: ::core::option::Option<NodeInfo>,
+    pub migrate_info: ::core::option::Option<MigrateInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -189,6 +213,41 @@ pub mod fawn_backend_service_client {
                 .insert(GrpcMethod::new("fawn_backend_api.FawnBackendService", "Ping"));
             self.inner.unary(req, path, codec).await
         }
+        /// get logical timestamp from the backend
+        /// the logical timestamp can be a non-decreasing logical timestamp stored in the local backend
+        /// the timestamp should increment by 1 every time a new value is stored in the local backend
+        /// for same store request, the timestamp should be the same when passing down the chain
+        /// should ensure that is timestamp is decided by the head of the chain such that new joining node can catch up with the chain after pre-copy stage
+        pub async fn get_timestamp(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetTimestampRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetTimestampResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/fawn_backend_api.FawnBackendService/GetTimestamp",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "fawn_backend_api.FawnBackendService",
+                        "GetTimestamp",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn get_value(
             &mut self,
             request: impl tonic::IntoRequest<super::GetRequest>,
@@ -213,6 +272,11 @@ pub mod fawn_backend_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// store value down the chain
+        /// new field: timestamp,pass_count
+        /// the backend should be responsible for passing the value down the chain for pass_count times
+        /// ex: for pass_count = 3, the backend should pass the value to the successor 3 times
+        /// for pass_count = 0, the backend should not pass the value down the chain
         pub async fn store_value(
             &mut self,
             request: impl tonic::IntoRequest<super::StoreRequest>,
@@ -237,6 +301,7 @@ pub mod fawn_backend_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// update successor in the state
         pub async fn update_successor(
             &mut self,
             request: impl tonic::IntoRequest<super::UpdateSuccessorRequest>,
@@ -267,11 +332,12 @@ pub mod fawn_backend_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn prepare_for_split(
+        /// update predecessor in the state
+        pub async fn update_predecessor(
             &mut self,
-            request: impl tonic::IntoRequest<super::PrepareForSplitRequest>,
+            request: impl tonic::IntoRequest<super::UpdatePredecessorRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::PrepareForSplitResponse>,
+            tonic::Response<super::UpdatePredecessorResponse>,
             tonic::Status,
         > {
             self.inner
@@ -285,18 +351,21 @@ pub mod fawn_backend_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/fawn_backend_api.FawnBackendService/PrepareForSplit",
+                "/fawn_backend_api.FawnBackendService/UpdatePredecessor",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
                         "fawn_backend_api.FawnBackendService",
-                        "PrepareForSplit",
+                        "UpdatePredecessor",
                     ),
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// migrate data to destination node (does NOT delete the data from the source node)
+        /// the destination node need not be the client sending the request
+        /// used for both data replication when storing value or when a node crashes
         pub async fn migrate_data(
             &mut self,
             request: impl tonic::IntoRequest<super::MigrateDataRequest>,
@@ -337,14 +406,32 @@ pub mod fawn_backend_service_server {
             &self,
             request: tonic::Request<super::PingRequest>,
         ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status>;
+        /// get logical timestamp from the backend
+        /// the logical timestamp can be a non-decreasing logical timestamp stored in the local backend
+        /// the timestamp should increment by 1 every time a new value is stored in the local backend
+        /// for same store request, the timestamp should be the same when passing down the chain
+        /// should ensure that is timestamp is decided by the head of the chain such that new joining node can catch up with the chain after pre-copy stage
+        async fn get_timestamp(
+            &self,
+            request: tonic::Request<super::GetTimestampRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetTimestampResponse>,
+            tonic::Status,
+        >;
         async fn get_value(
             &self,
             request: tonic::Request<super::GetRequest>,
         ) -> std::result::Result<tonic::Response<super::GetResponse>, tonic::Status>;
+        /// store value down the chain
+        /// new field: timestamp,pass_count
+        /// the backend should be responsible for passing the value down the chain for pass_count times
+        /// ex: for pass_count = 3, the backend should pass the value to the successor 3 times
+        /// for pass_count = 0, the backend should not pass the value down the chain
         async fn store_value(
             &self,
             request: tonic::Request<super::StoreRequest>,
         ) -> std::result::Result<tonic::Response<super::StoreResponse>, tonic::Status>;
+        /// update successor in the state
         async fn update_successor(
             &self,
             request: tonic::Request<super::UpdateSuccessorRequest>,
@@ -352,13 +439,17 @@ pub mod fawn_backend_service_server {
             tonic::Response<super::UpdateSuccessorResponse>,
             tonic::Status,
         >;
-        async fn prepare_for_split(
+        /// update predecessor in the state
+        async fn update_predecessor(
             &self,
-            request: tonic::Request<super::PrepareForSplitRequest>,
+            request: tonic::Request<super::UpdatePredecessorRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::PrepareForSplitResponse>,
+            tonic::Response<super::UpdatePredecessorResponse>,
             tonic::Status,
         >;
+        /// migrate data to destination node (does NOT delete the data from the source node)
+        /// the destination node need not be the client sending the request
+        /// used for both data replication when storing value or when a node crashes
         async fn migrate_data(
             &self,
             request: tonic::Request<super::MigrateDataRequest>,
@@ -476,6 +567,53 @@ pub mod fawn_backend_service_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = PingSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/fawn_backend_api.FawnBackendService/GetTimestamp" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetTimestampSvc<T: FawnBackendService>(pub Arc<T>);
+                    impl<
+                        T: FawnBackendService,
+                    > tonic::server::UnaryService<super::GetTimestampRequest>
+                    for GetTimestampSvc<T> {
+                        type Response = super::GetTimestampResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetTimestampRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as FawnBackendService>::get_timestamp(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = GetTimestampSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -630,25 +768,25 @@ pub mod fawn_backend_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/fawn_backend_api.FawnBackendService/PrepareForSplit" => {
+                "/fawn_backend_api.FawnBackendService/UpdatePredecessor" => {
                     #[allow(non_camel_case_types)]
-                    struct PrepareForSplitSvc<T: FawnBackendService>(pub Arc<T>);
+                    struct UpdatePredecessorSvc<T: FawnBackendService>(pub Arc<T>);
                     impl<
                         T: FawnBackendService,
-                    > tonic::server::UnaryService<super::PrepareForSplitRequest>
-                    for PrepareForSplitSvc<T> {
-                        type Response = super::PrepareForSplitResponse;
+                    > tonic::server::UnaryService<super::UpdatePredecessorRequest>
+                    for UpdatePredecessorSvc<T> {
+                        type Response = super::UpdatePredecessorResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::PrepareForSplitRequest>,
+                            request: tonic::Request<super::UpdatePredecessorRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as FawnBackendService>::prepare_for_split(
+                                <T as FawnBackendService>::update_predecessor(
                                         &inner,
                                         request,
                                     )
@@ -664,7 +802,7 @@ pub mod fawn_backend_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
-                        let method = PrepareForSplitSvc(inner);
+                        let method = UpdatePredecessorSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

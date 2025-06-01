@@ -11,6 +11,16 @@ pub struct NodeInfo {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MigrateInfo {
+    #[prost(message, optional, tag = "1")]
+    pub dest_info: ::core::option::Option<NodeInfo>,
+    #[prost(uint32, tag = "2")]
+    pub start_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub end_id: u32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RequestJoinRingRequest {
     #[prost(message, optional, tag = "1")]
     pub node_info: ::core::option::Option<NodeInfo>,
@@ -22,6 +32,8 @@ pub struct RequestJoinRingResponse {
     pub successor_info: ::core::option::Option<NodeInfo>,
     #[prost(message, optional, tag = "2")]
     pub predecessor_info: ::core::option::Option<NodeInfo>,
+    #[prost(message, repeated, tag = "3")]
+    pub migrate_info: ::prost::alloc::vec::Vec<MigrateInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -174,6 +186,9 @@ pub mod fawn_frontend_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
+        /// request to join the ring
+        /// returns the successor and predecessor of the new node
+        /// also returns the migrate info for the new node to migrate data from the tails of chain that the new node will be in
         pub async fn request_join_ring(
             &mut self,
             request: impl tonic::IntoRequest<super::RequestJoinRingRequest>,
@@ -351,6 +366,9 @@ pub mod fawn_frontend_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with FawnFrontendServiceServer.
     #[async_trait]
     pub trait FawnFrontendService: Send + Sync + 'static {
+        /// request to join the ring
+        /// returns the successor and predecessor of the new node
+        /// also returns the migrate info for the new node to migrate data from the tails of chain that the new node will be in
         async fn request_join_ring(
             &self,
             request: tonic::Request<super::RequestJoinRingRequest>,
