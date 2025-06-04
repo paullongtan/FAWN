@@ -1,4 +1,5 @@
 use fawn_common::fawn_backend_api::{fawn_backend_service_client::FawnBackendServiceClient, StoreRequest};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::BTreeMap;
@@ -7,6 +8,7 @@ use fawn_common::types::NodeInfo;
 use fawn_common::err::{FawnError, FawnResult};
 use fawn_common::util::get_node_id;
 
+use crate::meta::Meta;
 use crate::storage::logstore::LogStructuredStore;
 use crate::server::BackendSystemState;
 
@@ -18,17 +20,28 @@ type PendingBuf = BTreeMap<u64 /*timestamp*/, PendingOp>;
 pub struct BackendHandler {
     storage: Arc<LogStructuredStore>,
     state: Arc<BackendSystemState>,
+
     clock: Arc<AtomicU64>, // Logical clock for operation sequencing
+    last_acked: Arc<AtomicU64>, // Last acknowledged timestamp
     pending_ops: Arc<tokio::sync::RwLock<PendingBuf>>, // Pending operations to be processed
+
+    meta_path: PathBuf, // Path to the metadata file
 }
 
+// TODO: read from on-disk metadata to initiate its clock and pending_ops
 impl BackendHandler {
-    pub fn new(storage: LogStructuredStore, state: Arc<BackendSystemState>) -> FawnResult<Self> {
+    pub fn new(storage: LogStructuredStore, state: Arc<BackendSystemState>, meta: Meta, meta_path: PathBuf) -> FawnResult<Self> {
+
+        // TODO: rebuild pending buffer; every record with timestamp > last_acked_ts
+        // let pending = store.scan_since_ts(meta.last_acked_ts)?;
+
         Ok(Self {
             storage: Arc::new(storage),
             state,
-            clock: Arc::new(AtomicU64::new(0)),
-            pending_ops: Arc::new(tokio::sync::RwLock::new(BTreeMap::new())),
+            clock: Arc::new(AtomicU64::new(meta.last_ts)),
+            last_acked: Arc::new(AtomicU64::new(meta.last_acked_ts)),
+            pending_ops: Arc::new(tokio::sync::RwLock::new(BTreeMap::new())), // TODO: rebuild from disk
+            meta_path,
         })
     }
 
@@ -56,14 +69,14 @@ impl BackendHandler {
         let timestamp = if timestamp_in == 0 { // only head receives timestamp 0
             // head increments its logical clock
             // and attaches its current timestamp to the operation
-            self.clock.fetch_add(1, Ordering::Relaxed) + 1
+            self.bump_clock()
         } else {
             // followers make sure local clock >= incoming timestamp
             self.update_clock(timestamp_in);
             timestamp_in
         };
 
-        // TODO: check whether we need to put the value with the timestamp
+        // TODO: value needs to be attached with a timestamp
         // local append (store on local disk)
         self.storage
             .put(key_id, value.clone())
@@ -71,7 +84,7 @@ impl BackendHandler {
 
         // stop forwarding if no pass_remaining is 0 (tail)
         if pass_remaining == 0 {
-            self.storage.flush()?;
+            self.storage.flush()?; // TODO: check whether we need to flush the storage
             return Ok(true);
         }
 
@@ -109,6 +122,8 @@ impl BackendHandler {
 
     async fn remove_pending(&self, timestamp: u64) {
         self.pending_ops.write().await.remove(&timestamp);
+        // acknowledge the operation
+        self.ack(timestamp);
     }
 
     pub async fn handle_update_successor(&mut self, successor: &NodeInfo) -> FawnResult<bool> {
@@ -156,11 +171,15 @@ impl BackendHandler {
         Ok(true)
     }
 
+    // TODO: update the timestamp on disk
     fn update_clock(&self, timestamp: u64) {
         let mut curr = self.clock.load(Ordering::Relaxed);
         while timestamp > curr {
             match self.clock.compare_exchange(curr, timestamp, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => break, // Successfully updated the clock
+                Ok(_) => {
+                    self.persist_meta(); // persist the updated clock
+                    break; // successfully updated the clock
+                }
                 Err(v) => curr = v, // lost race; retry if still smaller
             }
         }
@@ -190,5 +209,25 @@ impl BackendHandler {
 
     pub fn get_current_timestamp(&self) -> u64 {
         self.clock.load(Ordering::Relaxed)
+    }
+
+    fn bump_clock(&self) -> u64 {
+        let ts = self.clock.fetch_add(1, Ordering::Relaxed) + 1; // increment and return the new value
+        self.persist_meta();
+        ts
+    }
+
+    fn ack(&self, timestamp: u64) {
+        // update the last acked timestamp
+        self.last_acked.store(timestamp, Ordering::Relaxed);
+        self.persist_meta();
+    }
+
+    fn persist_meta(&self) -> std::io::Result<()>  {
+        let m = Meta {
+            last_ts: self.get_current_timestamp(),
+            last_acked_ts: self.last_acked.load(Ordering::Relaxed),
+        }; 
+        m.store(&self.meta_path)
     }
 }
