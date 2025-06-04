@@ -1,5 +1,7 @@
 use fawn_common::fawn_backend_api::{fawn_backend_service_client::FawnBackendServiceClient, StoreRequest};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::BTreeMap;
 
 use fawn_common::types::NodeInfo;
 use fawn_common::err::{FawnError, FawnResult};
@@ -8,10 +10,16 @@ use fawn_common::util::get_node_id;
 use crate::storage::logstore::LogStructuredStore;
 use crate::server::BackendSystemState;
 
+
+type PendingOp = (u32 /*key*/, Vec<u8> /*val*/, u32 /*remaining_pass*/);
+type PendingBuf = BTreeMap<u64 /*timestamp*/, PendingOp>;
+
 #[derive(Clone)]
 pub struct BackendHandler {
     storage: Arc<LogStructuredStore>,
     state: Arc<BackendSystemState>,
+    clock: Arc<AtomicU64>, // Logical clock for operation sequencing
+    pending_ops: Arc<tokio::sync::RwLock<PendingBuf>>, // Pending operations to be processed
 }
 
 impl BackendHandler {
@@ -19,6 +27,8 @@ impl BackendHandler {
         Ok(Self {
             storage: Arc::new(storage),
             state,
+            clock: Arc::new(AtomicU64::new(0)),
+            pending_ops: Arc::new(tokio::sync::RwLock::new(BTreeMap::new())),
         })
     }
 
@@ -26,6 +36,7 @@ impl BackendHandler {
         Ok(self.state.self_info.clone())
     }
 
+    // TODO: check whether we need to forward to the tail
     pub fn handle_get_value(&self, key_id: u32) -> FawnResult<Vec<u8>> {
         match self.storage.get(key_id) {
             Ok(Some(value)) => {
@@ -40,15 +51,64 @@ impl BackendHandler {
         }
     }
 
-    pub fn handle_store_value(&self, key_id: u32, value: Vec<u8>) -> FawnResult<bool> {
-        match self.storage.put(key_id, value) {
-            Ok(()) => {
-                Ok(true)
-            }
-            Err(e) => {
-                Err(Box::new(FawnError::SystemError(format!("Failed to store value due to storage error: {}", e))))
-            }
+    pub async fn handle_store_value(&self, key_id: u32, value: Vec<u8>, pass_remaining: u32, timestamp_in: u64) -> FawnResult<bool> {
+        // head attached its logical clock to the operation
+        let timestamp = if timestamp_in == 0 { // only head receives timestamp 0
+            // head increments its logical clock
+            // and attaches its current timestamp to the operation
+            self.clock.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            // followers make sure local clock >= incoming timestamp
+            self.update_clock(timestamp_in);
+            timestamp_in
+        };
+
+        // TODO: check whether we need to put the value with the timestamp
+        // local append (store on local disk)
+        self.storage
+            .put(key_id, value.clone())
+            .map_err(|e| FawnError::SystemError(format!("Failed to store value due to storage error: {}", e)))?;
+
+        // stop forwarding if no pass_remaining is 0 (tail)
+        if pass_remaining == 0 {
+            self.storage.flush()?;
+            return Ok(true);
         }
+
+        // log the operation in the pending buffer
+        {
+            let mut pending_ops = self.pending_ops.write().await;
+            pending_ops.insert(timestamp, (key_id, value.clone(), pass_remaining));
+        }
+
+        // forward the store request to the successor
+        match self.forward_once(timestamp, key_id, value, pass_remaining - 1).await? {
+            true => { self.remove_pending(timestamp).await; Ok(true) }, 
+            false => Err(Box::new(FawnError::RpcError("transport failure".into()))), // let the caller replay the operation
+        }
+    }
+
+    async fn forward_once(&self, timestamp: u64, key_id: u32, value: Vec<u8>, pass_remaining_next: u32) -> FawnResult<bool> {
+        let successor = self.state.successor.read().await.clone();
+        let mut client = FawnBackendServiceClient::connect(successor.get_http_addr()).await
+            .map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
+
+        let request = StoreRequest {
+            key_id,
+            value,
+            timestamp,
+            pass_count: pass_remaining_next,
+        }; 
+
+        // TODO: check whether to separate transport errors from application errors
+        match client.store_value(request).await {
+            Ok(_) => Ok(true), // delivered & ACKed
+            Err(_) => Ok(false), // map every error as a transport failure, caller should retry
+        }
+    }
+
+    async fn remove_pending(&self, timestamp: u64) {
+        self.pending_ops.write().await.remove(&timestamp);
     }
 
     pub async fn handle_update_successor(&mut self, successor: &NodeInfo) -> FawnResult<bool> {
@@ -85,6 +145,8 @@ impl BackendHandler {
             let request = fawn_common::fawn_backend_api::StoreRequest {
                 key_id,
                 value,
+                timestamp: 0, // TODO: check whether migration cause the head to increment its clock
+                pass_count: 0, // no further forwarding needed
             };
             let response = client.store_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to send data to predecessor: {}", e)))?;
             if !response.get_ref().success {
@@ -92,5 +154,41 @@ impl BackendHandler {
             }
         }
         Ok(true)
+    }
+
+    fn update_clock(&self, timestamp: u64) {
+        let mut curr = self.clock.load(Ordering::Relaxed);
+        while timestamp > curr {
+            match self.clock.compare_exchange(curr, timestamp, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break, // Successfully updated the clock
+                Err(v) => curr = v, // lost race; retry if still smaller
+            }
+        }
+    }
+
+    pub async fn replay_pending_ops(&self) -> FawnResult<()> {
+        loop {
+            // take a ordered snapshot of pending operations
+            let snapshot: Vec<(u64, PendingOp)> = {
+                let buf = self.pending_ops.read().await;
+                if buf.is_empty() { return Ok(()); }
+                buf.iter().map(|(ts, op)| (*ts, op.clone())).collect()
+            };
+
+            // replay each operation in the snapshot
+            for (timestamp, (key_id, value, pass_remaining)) in snapshot {
+                match self.forward_once(timestamp, key_id, value, pass_remaining - 1).await? {
+                    true => { self.remove_pending(timestamp).await; } // drop entry if successfully forwarded
+                    false => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // wait before retrying
+                        continue; // retry the operation
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn get_current_timestamp(&self) -> u64 {
+        self.clock.load(Ordering::Relaxed)
     }
 }

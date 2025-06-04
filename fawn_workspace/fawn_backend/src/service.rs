@@ -5,18 +5,11 @@ use tonic::{Response, Status};
 use crate::rpc_handler::BackendHandler;
 use fawn_common::fawn_backend_api::fawn_backend_service_server::FawnBackendService;
 use fawn_common::fawn_backend_api::{
-    PingRequest, 
-    PingResponse, 
-    GetRequest, 
-    GetResponse, 
-    StoreRequest, 
-    StoreResponse, 
-    UpdateSuccessorRequest, 
-    UpdateSuccessorResponse, 
-    PrepareForSplitRequest, 
-    PrepareForSplitResponse, 
-    MigrateDataRequest,
-    MigrateDataResponse};
+    GetRequest, GetResponse, GetTimestampRequest, 
+    MigrateDataRequest, MigrateDataResponse, PingRequest, 
+    PingResponse, StoreRequest, StoreResponse, 
+    UpdatePredecessorRequest, UpdatePredecessorResponse,
+    UpdateSuccessorRequest, UpdateSuccessorResponse};
 use fawn_common::err::FawnError;
 
 pub struct BackendService {
@@ -41,6 +34,17 @@ impl FawnBackendService for BackendService {
         }))
     }
 
+    async fn get_timestamp(
+        &self,
+        _request: tonic::Request<(GetTimestampRequest)>,
+    ) -> std::result::Result<tonic::Response<fawn_common::fawn_backend_api::GetTimestampResponse>, tonic::Status>{
+        // place-holder for get_timestamp implementation
+        let timestamp = self.handler.lock().await.get_current_timestamp();
+        Ok(Response::new(fawn_common::fawn_backend_api::GetTimestampResponse {
+            timestamp,
+        }))
+    }
+
     async fn get_value(
         &self,
         request: tonic::Request<GetRequest>,
@@ -60,7 +64,11 @@ impl FawnBackendService for BackendService {
         let inner = request.into_inner();
         let key_id = inner.key_id;
         let value = inner.value;
-        let success = self.handler.lock().await.handle_store_value(key_id, value).map_err(|e| Status::internal(e.to_string()))?  ;
+        let timestamp = inner.timestamp;
+        let pass_remaining = inner.pass_count;
+        let success = self.handler.lock().await
+                            .handle_store_value(key_id, value, pass_remaining, timestamp).await
+                            .map_err(|e| Status::internal(e.to_string()))?  ;
         Ok(Response::new(StoreResponse {
             success,
         }))
@@ -80,20 +88,18 @@ impl FawnBackendService for BackendService {
             success,
         }))
     }
-    async fn prepare_for_split(
-        &self,
-        request: tonic::Request<PrepareForSplitRequest>,
+
+    async fn update_predecessor(
+        &self, 
+        request: tonic::Request<UpdatePredecessorRequest>,
     ) -> std::result::Result<
-        tonic::Response<PrepareForSplitResponse>,
+        tonic::Response<UpdatePredecessorResponse>,
         tonic::Status,
-    >{
-        let new_predecessor_info = request.into_inner().new_predecessor_info.ok_or_else(|| Status::invalid_argument("new_predecessor_info is required"))?;
-        let new_predecessor_info = fawn_common::types::NodeInfo::from(new_predecessor_info);
-        let success = self.handler.lock().await.handle_prepare_for_split(&new_predecessor_info).await.map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(PrepareForSplitResponse {
-            success,
-        }))
+    > {
+        // place-holder for update_predecessor implementation
+        Err(Status::unimplemented("update_predecessor is not implemented"))
     }
+
     async fn migrate_data(
         &self,
         request: tonic::Request<MigrateDataRequest>,

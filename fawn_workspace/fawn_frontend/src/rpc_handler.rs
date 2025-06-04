@@ -11,6 +11,8 @@ use fawn_common::fawn_frontend_api::fawn_frontend_service_client::FawnFrontendSe
 use tonic::Request;
 use fawn_common::fawn_frontend_api::NotifyBackendJoinRequest;
 
+const REPLICA_MAX: u32 = 3; // Maximum number of replicas for chain replication
+
 pub async fn handle_request_join_ring(
     backend_manager: Arc<BackendManager>,
     new_node: NodeInfo,
@@ -77,6 +79,7 @@ pub async fn handle_finalize_join_ring(
     Ok(true)
 }
 
+// TODO: check whether we need to forward to the tail
 pub async fn handle_get_value(
     backend_manager: Arc<BackendManager>,
     user_key: String,
@@ -113,10 +116,19 @@ pub async fn handle_put_value(
     let addr = successor.get_http_addr();
     let mut client = FawnBackendServiceClient::connect(addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
     
+    // Calculate the number of passes needed down the chain
+    let ring_size = backend_manager.num_active_backends().await;
+    let num_replicas_needed = std::cmp::min(REPLICA_MAX, ring_size);
+
+    // pass_remaining is the number of times the request should be forwarded to the next backend
+    let pass_remaining = num_replicas_needed - 1;
+
     // Make the gRPC call to store the value
     let request = fawn_common::fawn_backend_api::StoreRequest {
         key_id,
         value,
+        timestamp: 0, // frontend sends ts=0, so that the head of chain can assign its current timestamp
+        pass_count: pass_remaining, // number of passes remaining down the chain
     };
     
     let response = client.store_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to store value: {}", e)))?;

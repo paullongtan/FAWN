@@ -68,4 +68,8 @@ impl BackendManager {
             .find(|b| b.id < key_id)
             .cloned()
     }
+
+    pub async fn num_active_backends(&self) -> u32 {
+        self.active_backends.read().await.len() as u32
+    }
 }
