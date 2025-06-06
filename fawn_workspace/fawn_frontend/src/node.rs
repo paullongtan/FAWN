@@ -33,7 +33,7 @@ struct SystemState {
 }
 
 impl SystemState {
-    pub fn new(front_addresses: Vec<String>, this: usize) -> FawnResult<Self> {
+    pub fn new(front_addresses: Vec<String>, this: usize, replication_count: u32) -> FawnResult<Self> {
         let mut fronts: Vec<NodeInfo> = Vec::new();
         for front_address in front_addresses {
             // Remove any existing protocol prefix for parsing
@@ -49,15 +49,14 @@ impl SystemState {
 
         Ok(Self {
             ready: AtomicBool::new(false),
-            backend_manager: Arc::new(BackendManager::new(vec![])),
+            backend_manager: Arc::new(BackendManager::new(vec![], replication_count)),
             fronts,
             this,
         })
     }
 
     pub async fn get_responsible_frontend(&self, key_id: u32) -> FawnResult<NodeInfo> {
-        // each frontend is responsible for a range of backend ids
-        // the range is (frontend's predecessor's id, frontend's id]
+        // each frontend is responsible for a range of chains with head backend id in (frontend's predecessor's id, frontend's id]
         // first find the backend successor for the key_id
         // then find the frontend successor for the backend's id
         let backend_successor = self.backend_manager.find_successor(key_id).await.ok_or_else(|| 
@@ -106,8 +105,8 @@ pub struct FrontendNode {
 }
 
 impl FrontendNode {
-    pub fn new(fronts: Vec<String>, this: usize) -> FawnResult<Self> {
-        let state = SystemState::new(fronts, this)?;
+    pub fn new(fronts: Vec<String>, this: usize, replication_count: u32) -> FawnResult<Self> {
+        let state = SystemState::new(fronts, this, replication_count)?;
         let state = Arc::new(state);
         
         Ok(Self {
@@ -252,6 +251,8 @@ impl FawnFrontendService for FawnFrontend {
         // the requesting backend will then migrate responsible data from its successor backend
         // the requesting backend will then send a request to the frontend to finalize the join
 
+        todo!("Update to support chain replication joins");
+
         if !self.state.ready.load(Ordering::Relaxed) {
             return Err(Status::unavailable("System is not ready yet"));
         }
@@ -289,6 +290,9 @@ impl FawnFrontendService for FawnFrontend {
         // the frontend will update its backend list
         // the frontend will then notify other frontends of the new node's node info to update their backend list
         // the frontend will then return a response to the requesting backend
+
+        todo!("Update to support chain replication joins");
+
         if !self.state.ready.load(Ordering::Relaxed) {
             return Err(Status::unavailable("System is not ready yet"));
         }
@@ -329,6 +333,7 @@ impl FawnFrontendService for FawnFrontend {
         &self,
         request: tonic::Request<GetRequest>,
     ) -> std::result::Result<tonic::Response<GetResponse>, tonic::Status> {
+
         if !self.state.ready.load(Ordering::Relaxed) {
             return Err(Status::unavailable("System is not ready yet"));
         }
@@ -352,19 +357,17 @@ impl FawnFrontendService for FawnFrontend {
                 return Err(Status::internal(e.to_string()));
             }
         }
-        let (value, success) = handle_get_value(self.state.backend_manager.clone(), user_key)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let value = handle_get_value(self.state.backend_manager.clone(), user_key).await?;
         Ok(Response::new(GetResponse {
-            value,
-            success,
+            value
         }))
     }
 
     async fn put_value(
         &self,
         request: tonic::Request<PutRequest>,
-    ) -> std::result::Result<tonic::Response<PutResponse>, tonic::Status> {
+    ) -> std::result::Result<tonic::Response<PutResponse>, tonic::Status> {        
+
         if !self.state.ready.load(Ordering::Relaxed) {
             return Err(Status::unavailable("System is not ready yet"));
         }
@@ -390,12 +393,8 @@ impl FawnFrontendService for FawnFrontend {
             }
         }
 
-        let success = handle_put_value(self.state.backend_manager.clone(), user_key, value)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(PutResponse {
-            success,
-        }))
+        handle_put_value(self.state.backend_manager.clone(), user_key, value).await?;
+        Ok(Response::new(PutResponse {}))
     }
 
     async fn notify_backend_join(
@@ -412,12 +411,8 @@ impl FawnFrontendService for FawnFrontend {
         let backend_info = inner.backend_info.ok_or_else(|| 
             Status::invalid_argument("backend_info is required"))?;
         let backend_info = fawn_common::types::NodeInfo::from(backend_info);
-        let success = handle_notify_backend_join(self.state.backend_manager.clone(), backend_info)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(NotifyBackendJoinResponse {
-            success,
-        }))
+        handle_notify_backend_join(self.state.backend_manager.clone(), backend_info).await;
+        Ok(Response::new(NotifyBackendJoinResponse {}))
         
     }
     async fn notify_backend_leave(
@@ -434,12 +429,8 @@ impl FawnFrontendService for FawnFrontend {
         let backend_info = inner.backend_info.ok_or_else(|| 
             Status::invalid_argument("backend_info is required"))?;
         let backend_info = fawn_common::types::NodeInfo::from(backend_info);
-        let success = handle_notify_backend_leave(self.state.backend_manager.clone(), backend_info)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(NotifyBackendLeaveResponse {
-            success,
-        }))
+        handle_notify_backend_leave(self.state.backend_manager.clone(), backend_info).await;
+        Ok(Response::new(NotifyBackendLeaveResponse {}))
     }
     
 }

@@ -6,13 +6,15 @@ use fawn_common::types::NodeInfo;
 #[derive(Debug)]
 pub struct BackendManager {
     // Active backend nodes in the ring
-    active_backends: Arc<RwLock<Vec<NodeInfo>>>
+    active_backends: Arc<RwLock<Vec<NodeInfo>>>,
+    replication_count: u32,
 }
 
 impl BackendManager {
-    pub fn new(initial_backends: Vec<NodeInfo>) -> Self {
+    pub fn new(initial_backends: Vec<NodeInfo>, replication_count: u32) -> Self {
         Self {
-            active_backends: Arc::new(RwLock::new(initial_backends))
+            active_backends: Arc::new(RwLock::new(initial_backends)),
+            replication_count,
         }
     }
 
@@ -22,9 +24,10 @@ impl BackendManager {
 
     pub async fn add_backend(&self, backend: NodeInfo) {
         let mut backends = self.active_backends.write().await;
-        backends.push(backend);
-        // Sort backends by ID to maintain ring order
-        backends.sort_by_key(|b| b.id);
+        // Use binary search to find the insertion point
+        let pos = backends.binary_search_by_key(&backend.id, |b| b.id)
+            .unwrap_or_else(|p| p);
+        backends.insert(pos, backend);
     }
 
     pub async fn remove_backend(&self, backend_id: u32) {
@@ -39,16 +42,19 @@ impl BackendManager {
             return None;
         }
 
-        // if key_id is greater than all node ids, wrap around to first node
-        if key_id > backends.last().unwrap().id {
-            return backends.first().cloned();
+        // Use binary search to find the first backend with ID >= key_id
+        match backends.binary_search_by_key(&key_id, |b| b.id) {
+            Ok(pos) => Some(backends[pos].clone()), // Exact match
+            Err(pos) => {
+                if pos == backends.len() {
+                    // Wrap around to the first node
+                    backends.first().cloned()
+                } else {
+                    Some(backends[pos].clone())
+                }
+            }
         }
-        
-        // Find the first backend with ID greater than or equal to the key_id
-        backends.iter()
-            .find(|b| b.id >= key_id)
-            .cloned()
-        }
+    }
 
     pub async fn find_predecessor(&self, key_id: u32) -> Option<NodeInfo> {
         let backends = self.active_backends.read().await;
@@ -57,15 +63,56 @@ impl BackendManager {
             return None;
         }
 
-        // if key_id is smaller than all node ids, wrap around to last node
-        if key_id <= backends.first().unwrap().id {
-            return backends.last().cloned();
+        // Use binary search to find the backend with max ID that is < key_id
+        match backends.binary_search_by_key(&key_id, |b| b.id) {
+            Ok(pos) => {
+                // For exact match, we want the previous node
+                if pos == 0 {
+                    backends.last().cloned() // Wrap around to last node
+                } else {
+                    Some(backends[pos - 1].clone())
+                }
+            }
+            Err(pos) => {
+                if pos == 0 {
+                    // Wrap around to the last node
+                    backends.last().cloned()
+                } else {
+                    Some(backends[pos - 1].clone())
+                }
+            }
+        }
+    }
+
+    pub async fn get_chain_members(&self, key_id: u32) -> Vec<NodeInfo> {
+        let backends = self.active_backends.read().await;
+        let max_members = std::cmp::min(self.replication_count as usize, backends.len());
+        
+        if backends.is_empty() {
+            return Vec::new();
         }
 
-        // Find the backend with the greatest ID less than the key_id
-        backends.iter()
-            .rev()
-            .find(|b| b.id < key_id)
-            .cloned()
+        let mut chain_members = Vec::with_capacity(max_members);
+        
+        // Find the starting position using binary search
+        let start_pos = match backends.binary_search_by_key(&key_id, |b| b.id) {
+            Ok(pos) => pos,
+            Err(pos) => {
+                if pos == backends.len() {
+                    0 // Wrap around to start
+                } else {
+                    pos
+                }
+            }
+        };
+
+        // Collect successors by iterating through the array
+        let mut current_pos = start_pos;
+        while chain_members.len() < max_members {
+            chain_members.push(backends[current_pos].clone());
+            current_pos = (current_pos + 1) % backends.len();
+        }
+        
+        chain_members
     }
 }

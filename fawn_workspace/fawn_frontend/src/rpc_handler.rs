@@ -1,15 +1,13 @@
 use std::sync::Arc;
-use fawn_common::types::{NodeInfo, KeyValue};
+use fawn_common::types::NodeInfo;
 use fawn_common::err::{FawnError, FawnResult};
 use fawn_common::util::get_key_id;
 use fawn_common::fawn_backend_api::fawn_backend_service_client::FawnBackendServiceClient;
 use crate::backend_manager::BackendManager;
-use fawn_common::fawn_backend_api::{
-    UpdateSuccessorRequest, 
-    PrepareForSplitRequest};
 use fawn_common::fawn_frontend_api::fawn_frontend_service_client::FawnFrontendServiceClient;
 use tonic::Request;
 use fawn_common::fawn_frontend_api::NotifyBackendJoinRequest;
+use tonic::Status;
 
 pub async fn handle_request_join_ring(
     backend_manager: Arc<BackendManager>,
@@ -80,63 +78,61 @@ pub async fn handle_finalize_join_ring(
 pub async fn handle_get_value(
     backend_manager: Arc<BackendManager>,
     user_key: String,
-) -> FawnResult<(Vec<u8>, bool)> {
+) -> Result<Vec<u8>, Status> {
     let key_id = fawn_common::util::get_key_id(&user_key);
-    let successor = backend_manager.find_successor(key_id).await
-        .ok_or_else(|| Box::new(FawnError::NoBackendAvailable("no backend available".to_string())))?;
+    let chain_members = backend_manager.get_chain_members(key_id).await;
+    let tail_node = chain_members.last().unwrap();
     
-    // Create a gRPC client to the successor backend
-    let addr = successor.get_http_addr();
-    let mut client = FawnBackendServiceClient::connect(addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
+    let addr = tail_node.get_http_addr();
+    let mut client = FawnBackendServiceClient::connect(addr).await
+        .map_err(|e| Status::unavailable(format!("Failed to connect to successor: {}", e)))?;
     
-    // Make the gRPC call to get the value
     let request = fawn_common::fawn_backend_api::GetRequest {
         key_id,
     };
     
-    let response = client.get_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to get value: {}", e)))?;
-    let response = response.into_inner();
+    let response = client.get_value(request).await
+        .map_err(|e| Status::internal(format!("Failed to get value: {}", e)))?;
     
-    Ok((response.value, response.success))
+    Ok(response.into_inner().value)
 }
 
 pub async fn handle_put_value(
     backend_manager: Arc<BackendManager>,
     user_key: String,
     value: Vec<u8>,
-) -> FawnResult<bool> {
+) -> Result<(), Status> {
     let key_id = fawn_common::util::get_key_id(&user_key);
-    let successor = backend_manager.find_successor(key_id).await
-        .ok_or_else(|| Box::new(FawnError::NoBackendAvailable("no backend available".to_string())))?;
+    let chain_members = backend_manager.get_chain_members(key_id).await;
+    let head_node = chain_members.first().unwrap();
     
-    // Create a gRPC client to the successor backend
-    let addr = successor.get_http_addr();
-    let mut client = FawnBackendServiceClient::connect(addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
+    let addr = head_node.get_http_addr();
+    let mut client = FawnBackendServiceClient::connect(addr).await
+        .map_err(|e| Status::unavailable(format!("Failed to connect to successor: {}", e)))?;
     
-    // Make the gRPC call to store the value
+    let pass_count = (chain_members.len() - 1) as u32;
     let request = fawn_common::fawn_backend_api::StoreRequest {
         key_id,
         value,
+        pass_count,
     };
     
-    let response = client.store_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to store value: {}", e)))?;
-    let response = response.into_inner();
+    client.store_value(request).await
+        .map_err(|e| Status::internal(format!("Failed to store value: {}", e)))?;
     
-    Ok(response.success)
+    Ok(())
 }
 
 pub async fn handle_notify_backend_join(
     backend_manager: Arc<BackendManager>,
     backend_info: NodeInfo,
-) -> FawnResult<bool> {
+) {
     backend_manager.add_backend(backend_info).await;
-    Ok(true)
 }
 
 pub async fn handle_notify_backend_leave(
     backend_manager: Arc<BackendManager>,
     backend_info: NodeInfo,
-) -> FawnResult<bool> {
+) {
     backend_manager.remove_backend(backend_info.id).await;
-    Ok(true)
 }

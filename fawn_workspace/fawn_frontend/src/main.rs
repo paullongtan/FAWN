@@ -16,7 +16,7 @@ fn main() {
         std::process::exit(1);
     }
     let config = read_config(&args[1]);
-    let mut frontend = FrontendNode::new(config.fronts, config.this).unwrap();
+    let mut frontend = FrontendNode::new(config.fronts, config.this, 3).unwrap();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         frontend.start().await.unwrap();
     });
