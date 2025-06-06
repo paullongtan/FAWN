@@ -6,6 +6,6 @@ mod pointer;
 
 // Re-export all public types
 pub use log_store::LogStructuredStore;
-pub use record::Record;
+pub use record::{Record, RecordFlags};
 pub use segment::{SegmentInfo, SegmentWriter, SegmentReader};
 pub use pointer::RecordPtr;
