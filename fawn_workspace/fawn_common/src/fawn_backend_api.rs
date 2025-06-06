@@ -11,32 +11,18 @@ pub struct NodeInfo {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MigrateInfo {
-    #[prost(message, optional, tag = "1")]
-    pub dest_info: ::core::option::Option<NodeInfo>,
-    #[prost(uint32, tag = "2")]
-    pub start_id: u32,
-    #[prost(uint32, tag = "3")]
-    pub end_id: u32,
+pub struct ValueEntry {
+    #[prost(uint32, tag = "1")]
+    pub key_id: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PingRequest {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PingResponse {
-    #[prost(message, optional, tag = "1")]
-    pub node_info: ::core::option::Option<NodeInfo>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetTimestampRequest {}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetTimestampResponse {
-    #[prost(uint64, tag = "1")]
-    pub timestamp: u64,
-}
+pub struct PingResponse {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRequest {
@@ -48,8 +34,6 @@ pub struct GetRequest {
 pub struct GetResponse {
     #[prost(bytes = "vec", tag = "1")]
     pub value: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bool, tag = "2")]
-    pub success: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -58,54 +42,45 @@ pub struct StoreRequest {
     pub key_id: u32,
     #[prost(bytes = "vec", tag = "2")]
     pub value: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag = "3")]
-    pub timestamp: u64,
     /// how many times the value needs to be passed down the chain
-    #[prost(uint32, tag = "4")]
+    #[prost(uint32, tag = "3")]
     pub pass_count: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct StoreResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct UpdateSuccessorRequest {
-    #[prost(message, optional, tag = "1")]
-    pub successor_info: ::core::option::Option<NodeInfo>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct UpdateSuccessorResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct UpdatePredecessorRequest {
-    #[prost(message, optional, tag = "1")]
-    pub predecessor_info: ::core::option::Option<NodeInfo>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct UpdatePredecessorResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-}
+pub struct StoreResponse {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrateDataRequest {
     #[prost(message, optional, tag = "1")]
-    pub migrate_info: ::core::option::Option<MigrateInfo>,
+    pub dest_info: ::core::option::Option<NodeInfo>,
+    #[prost(uint32, tag = "2")]
+    pub start_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub end_id: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MigrateDataResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
+pub struct FlushDataResponse {}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChainMemberInfo {
+    /// the predecessor of the new node should update its successor to the new node
+    #[prost(message, optional, tag = "1")]
+    pub predecessor: ::core::option::Option<NodeInfo>,
+    /// the new node
+    #[prost(message, optional, tag = "2")]
+    pub new_node: ::core::option::Option<NodeInfo>,
+    /// the successor of the new node should update its predecessor to the new node
+    #[prost(message, optional, tag = "3")]
+    pub successor: ::core::option::Option<NodeInfo>,
+    /// the old tail node should flush the data received after pre-copy stage to the new node
+    #[prost(message, optional, tag = "4")]
+    pub old_tail: ::core::option::Option<NodeInfo>,
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpdateChainMemberResponse {}
 /// Generated client implementations.
 pub mod fawn_backend_service_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
@@ -213,41 +188,6 @@ pub mod fawn_backend_service_client {
                 .insert(GrpcMethod::new("fawn_backend_api.FawnBackendService", "Ping"));
             self.inner.unary(req, path, codec).await
         }
-        /// get logical timestamp from the backend
-        /// the logical timestamp can be a non-decreasing logical timestamp stored in the local backend
-        /// the timestamp should increment by 1 every time a new value is stored in the local backend
-        /// for same store request, the timestamp should be the same when passing down the chain
-        /// should ensure that is timestamp is decided by the head of the chain such that new joining node can catch up with the chain after pre-copy stage
-        pub async fn get_timestamp(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetTimestampRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetTimestampResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/fawn_backend_api.FawnBackendService/GetTimestamp",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "fawn_backend_api.FawnBackendService",
-                        "GetTimestamp",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
         pub async fn get_value(
             &mut self,
             request: impl tonic::IntoRequest<super::GetRequest>,
@@ -301,76 +241,13 @@ pub mod fawn_backend_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// update successor in the state
-        pub async fn update_successor(
-            &mut self,
-            request: impl tonic::IntoRequest<super::UpdateSuccessorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::UpdateSuccessorResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/fawn_backend_api.FawnBackendService/UpdateSuccessor",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "fawn_backend_api.FawnBackendService",
-                        "UpdateSuccessor",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// update predecessor in the state
-        pub async fn update_predecessor(
-            &mut self,
-            request: impl tonic::IntoRequest<super::UpdatePredecessorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::UpdatePredecessorResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/fawn_backend_api.FawnBackendService/UpdatePredecessor",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "fawn_backend_api.FawnBackendService",
-                        "UpdatePredecessor",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// migrate data to destination node (does NOT delete the data from the source node)
-        /// the destination node need not be the client sending the request
-        /// used for both data replication when storing value or when a node crashes
+        /// for pre-copy stage, migrating data from old tail to new node
+        /// server-side streaming
         pub async fn migrate_data(
             &mut self,
             request: impl tonic::IntoRequest<super::MigrateDataRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::MigrateDataResponse>,
+            tonic::Response<tonic::codec::Streaming<super::ValueEntry>>,
             tonic::Status,
         > {
             self.inner
@@ -391,6 +268,67 @@ pub mod fawn_backend_service_client {
                 .insert(
                     GrpcMethod::new("fawn_backend_api.FawnBackendService", "MigrateData"),
                 );
+            self.inner.server_streaming(req, path, codec).await
+        }
+        /// for final updata chain member stage, flushing data received after pre-copy stage from old tail to new node
+        /// the tail node should be responsible for documenting the data received after pre-copy stage
+        /// client-side streaming
+        pub async fn flush_data(
+            &mut self,
+            request: impl tonic::IntoStreamingRequest<Message = super::ValueEntry>,
+        ) -> std::result::Result<
+            tonic::Response<super::FlushDataResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/fawn_backend_api.FawnBackendService/FlushData",
+            );
+            let mut req = request.into_streaming_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("fawn_backend_api.FawnBackendService", "FlushData"),
+                );
+            self.inner.client_streaming(req, path, codec).await
+        }
+        /// after pre-copy stage, updating the chain member
+        pub async fn update_chain_member(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ChainMemberInfo>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateChainMemberResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/fawn_backend_api.FawnBackendService/UpdateChainMember",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "fawn_backend_api.FawnBackendService",
+                        "UpdateChainMember",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
     }
@@ -406,18 +344,6 @@ pub mod fawn_backend_service_server {
             &self,
             request: tonic::Request<super::PingRequest>,
         ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status>;
-        /// get logical timestamp from the backend
-        /// the logical timestamp can be a non-decreasing logical timestamp stored in the local backend
-        /// the timestamp should increment by 1 every time a new value is stored in the local backend
-        /// for same store request, the timestamp should be the same when passing down the chain
-        /// should ensure that is timestamp is decided by the head of the chain such that new joining node can catch up with the chain after pre-copy stage
-        async fn get_timestamp(
-            &self,
-            request: tonic::Request<super::GetTimestampRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetTimestampResponse>,
-            tonic::Status,
-        >;
         async fn get_value(
             &self,
             request: tonic::Request<super::GetRequest>,
@@ -431,30 +357,37 @@ pub mod fawn_backend_service_server {
             &self,
             request: tonic::Request<super::StoreRequest>,
         ) -> std::result::Result<tonic::Response<super::StoreResponse>, tonic::Status>;
-        /// update successor in the state
-        async fn update_successor(
-            &self,
-            request: tonic::Request<super::UpdateSuccessorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::UpdateSuccessorResponse>,
-            tonic::Status,
-        >;
-        /// update predecessor in the state
-        async fn update_predecessor(
-            &self,
-            request: tonic::Request<super::UpdatePredecessorRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::UpdatePredecessorResponse>,
-            tonic::Status,
-        >;
-        /// migrate data to destination node (does NOT delete the data from the source node)
-        /// the destination node need not be the client sending the request
-        /// used for both data replication when storing value or when a node crashes
+        /// Server streaming response type for the MigrateData method.
+        type MigrateDataStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::ValueEntry, tonic::Status>,
+            >
+            + Send
+            + 'static;
+        /// for pre-copy stage, migrating data from old tail to new node
+        /// server-side streaming
         async fn migrate_data(
             &self,
             request: tonic::Request<super::MigrateDataRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::MigrateDataResponse>,
+            tonic::Response<Self::MigrateDataStream>,
+            tonic::Status,
+        >;
+        /// for final updata chain member stage, flushing data received after pre-copy stage from old tail to new node
+        /// the tail node should be responsible for documenting the data received after pre-copy stage
+        /// client-side streaming
+        async fn flush_data(
+            &self,
+            request: tonic::Request<tonic::Streaming<super::ValueEntry>>,
+        ) -> std::result::Result<
+            tonic::Response<super::FlushDataResponse>,
+            tonic::Status,
+        >;
+        /// after pre-copy stage, updating the chain member
+        async fn update_chain_member(
+            &self,
+            request: tonic::Request<super::ChainMemberInfo>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateChainMemberResponse>,
             tonic::Status,
         >;
     }
@@ -582,53 +515,6 @@ pub mod fawn_backend_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/fawn_backend_api.FawnBackendService/GetTimestamp" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetTimestampSvc<T: FawnBackendService>(pub Arc<T>);
-                    impl<
-                        T: FawnBackendService,
-                    > tonic::server::UnaryService<super::GetTimestampRequest>
-                    for GetTimestampSvc<T> {
-                        type Response = super::GetTimestampResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetTimestampRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as FawnBackendService>::get_timestamp(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let inner = inner.0;
-                        let method = GetTimestampSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/fawn_backend_api.FawnBackendService/GetValue" => {
                     #[allow(non_camel_case_types)]
                     struct GetValueSvc<T: FawnBackendService>(pub Arc<T>);
@@ -721,113 +607,17 @@ pub mod fawn_backend_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/fawn_backend_api.FawnBackendService/UpdateSuccessor" => {
-                    #[allow(non_camel_case_types)]
-                    struct UpdateSuccessorSvc<T: FawnBackendService>(pub Arc<T>);
-                    impl<
-                        T: FawnBackendService,
-                    > tonic::server::UnaryService<super::UpdateSuccessorRequest>
-                    for UpdateSuccessorSvc<T> {
-                        type Response = super::UpdateSuccessorResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::UpdateSuccessorRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as FawnBackendService>::update_successor(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let inner = inner.0;
-                        let method = UpdateSuccessorSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/fawn_backend_api.FawnBackendService/UpdatePredecessor" => {
-                    #[allow(non_camel_case_types)]
-                    struct UpdatePredecessorSvc<T: FawnBackendService>(pub Arc<T>);
-                    impl<
-                        T: FawnBackendService,
-                    > tonic::server::UnaryService<super::UpdatePredecessorRequest>
-                    for UpdatePredecessorSvc<T> {
-                        type Response = super::UpdatePredecessorResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::UpdatePredecessorRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as FawnBackendService>::update_predecessor(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let inner = inner.0;
-                        let method = UpdatePredecessorSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/fawn_backend_api.FawnBackendService/MigrateData" => {
                     #[allow(non_camel_case_types)]
                     struct MigrateDataSvc<T: FawnBackendService>(pub Arc<T>);
                     impl<
                         T: FawnBackendService,
-                    > tonic::server::UnaryService<super::MigrateDataRequest>
+                    > tonic::server::ServerStreamingService<super::MigrateDataRequest>
                     for MigrateDataSvc<T> {
-                        type Response = super::MigrateDataResponse;
+                        type Response = super::ValueEntry;
+                        type ResponseStream = T::MigrateDataStream;
                         type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
+                            tonic::Response<Self::ResponseStream>,
                             tonic::Status,
                         >;
                         fn call(
@@ -850,6 +640,102 @@ pub mod fawn_backend_service_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = MigrateDataSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/fawn_backend_api.FawnBackendService/FlushData" => {
+                    #[allow(non_camel_case_types)]
+                    struct FlushDataSvc<T: FawnBackendService>(pub Arc<T>);
+                    impl<
+                        T: FawnBackendService,
+                    > tonic::server::ClientStreamingService<super::ValueEntry>
+                    for FlushDataSvc<T> {
+                        type Response = super::FlushDataResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<tonic::Streaming<super::ValueEntry>>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as FawnBackendService>::flush_data(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = FlushDataSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.client_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/fawn_backend_api.FawnBackendService/UpdateChainMember" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateChainMemberSvc<T: FawnBackendService>(pub Arc<T>);
+                    impl<
+                        T: FawnBackendService,
+                    > tonic::server::UnaryService<super::ChainMemberInfo>
+                    for UpdateChainMemberSvc<T> {
+                        type Response = super::UpdateChainMemberResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ChainMemberInfo>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as FawnBackendService>::update_chain_member(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = UpdateChainMemberSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

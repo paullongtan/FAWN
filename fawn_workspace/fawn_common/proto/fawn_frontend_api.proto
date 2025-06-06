@@ -21,7 +21,7 @@ message NodeInfo {
 }
 
 message MigrateInfo {
-    NodeInfo dest_info = 1;
+    NodeInfo src_info = 1;
     uint32 start_id = 2;
     uint32 end_id = 3;
 }
@@ -31,32 +31,26 @@ message RequestJoinRingRequest {
 }
 
 message RequestJoinRingResponse {
-    NodeInfo successor_info = 1;
-    NodeInfo predecessor_info = 2;
-    repeated MigrateInfo migrate_info = 3;
+    repeated MigrateInfo migrate_info = 1;
 }
 
 message FinalizeJoinRingRequest {
     NodeInfo node_info = 1;
-    bool migrate_success = 2;
 }
 
 message FinalizeJoinRingResponse {
-    bool join_ring_success = 1;
 }
 
 message NotifyBackendJoinRequest {
     NodeInfo backend_info = 1;
 }
 message NotifyBackendJoinResponse {
-    bool success = 1;
 }
 
 message NotifyBackendLeaveRequest {
     NodeInfo backend_info = 1;
 }
 message NotifyBackendLeaveResponse {
-    bool success = 1;
 }
 
 message GetRequest {
@@ -65,7 +59,6 @@ message GetRequest {
 
 message GetResponse {
     bytes value = 1;
-    bool success = 2;
 }
 
 message PutRequest {
@@ -74,5 +67,4 @@ message PutRequest {
 }
 
 message PutResponse {
-    bool success = 1;
 }

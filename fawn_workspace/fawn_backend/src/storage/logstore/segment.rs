@@ -236,30 +236,8 @@ impl SegmentWriter {
         Ok(())
     }
 
-    pub fn scan_after_ptr(&self, start_ptr: RecordPtr) -> io::Result<Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>> {
-        let mut results = Vec::new();
-        let mut current_offset = start_ptr.offset;
-
-        while current_offset < self.offset {
-            let mut len_buf = [0u8; 4];
-            self.log_fd.read_exact_at(&mut len_buf, current_offset as u64)?;
-            let rec_len = u32::from_le_bytes(len_buf) as usize + 4; // +4 for the length itself
-
-            let mut rec_buf = vec![0u8; rec_len];
-            self.log_fd.read_exact_at(&mut rec_buf, current_offset as u64)?;
-
-            let rec = Record::decode(&mut &rec_buf[..])?;
-            results.push((
-                RecordPtr { seg_id: self.meta.id, offset: current_offset }, 
-                rec.flags, 
-                rec_len as u32, 
-                rec.value.to_vec()
-            ));
-
-            current_offset += rec_len as u32;
-        }
-
-        Ok(results)
+    pub fn get_current_offset(&self) -> u32 {
+        self.offset
     }
 }
 
