@@ -4,7 +4,9 @@ TODO:
 */
 
 use super::segment::{SegmentInfo, SegmentWriter, SegmentReader};
+use super::pointer::RecordPtr;
 use super::record::{self, Record, RecordFlags};
+use std::result;
 use std::{
     fs, io::{self, Write}, os::unix::fs::FileExt, path::PathBuf, sync::{Mutex, RwLock}, time::{Duration, Instant}
 };
@@ -148,7 +150,7 @@ impl LogStructuredStore {
         let len_needed = super::record::FIXED_HDR + key.len() + value.len() + 4; // 4 for CRC32
         let mut writer = self.active.lock().unwrap();
 
-        // check if we need to roll the segment
+        // check if we need to roll the segment (no record crossing allowed)
         if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
             self.roll_segment(&mut *writer)?;
         }
@@ -289,6 +291,46 @@ impl LogStructuredStore {
         Ok(items.into_iter())
     }
 
+    pub fn scan_after_ptr_in_range(&self, start_ptr: RecordPtr, lo: u32, hi: u32) -> io::Result<Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>> {
+        let mut results = Vec::new();
+
+        // helper closure for ring range check
+        // if (lo < hi): range is (lo, hi]
+        // if (lo > hi): range is (lo, MAX] U [0, hi]
+        let in_range = |h: u32| -> bool {
+            if lo < hi {
+                lo < h && h <= hi
+            } else if lo > hi {
+                h > lo || h <= hi
+            } else {
+                false // lo == hi, no valid range
+            }
+        };
+
+        // sealed segments: reverse order (oldest to newest)
+        let sealed = self.sealed.read().unwrap();
+
+        // scan sealed segments from oldest to newest
+        for seg in sealed.iter().rev() {
+            if seg.meta.id < start_ptr.seg_id {
+                continue;
+            }
+            scan_segment_after_ptr(seg, start_ptr, &mut results, &in_range)?;
+        }
+
+        // scan active segment
+        // flush footer and clone meta of active segment
+        let meta = {
+            let mut w = self.active.lock().unwrap();
+            w.flush_footer()?;
+            w.meta.clone()
+        };
+        let active_reader = super::segment::SegmentReader::open(meta)?;
+        scan_segment_after_ptr(&active_reader, start_ptr, &mut results, &in_range)?;
+        
+        Ok(results)
+    }
+
     // Private API: for appending records with key bytes
     fn _put_with_key(&self, key: Vec<u8>, val: Vec<u8>) -> io::Result<()> {
         let len_needed = super::record::FIXED_HDR + key.len() + val.len() + 4; // 4 for CRC32
@@ -340,6 +382,38 @@ impl LogStructuredStore {
     }
 }
 
+
+fn scan_segment_after_ptr<F>(
+    seg: &SegmentReader,
+    start_ptr: RecordPtr,
+    results: &mut Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>,
+    in_range: F,
+) -> io::Result<()>
+where
+    F: Fn(u32) -> bool,
+{
+    let seg_id = seg.meta.id;
+    for (_hash, offset) in seg.footer_pairs() {
+        if seg_id == start_ptr.seg_id && offset <= start_ptr.offset {
+            continue;
+        }
+
+        let buf = seg.read_record_bytes(offset)?;
+        let rec = super::record::Record::decode(&mut &buf[..])?;
+
+        if !in_range(rec.hash32) {
+            continue;
+        }
+
+        results.push((
+            RecordPtr { seg_id, offset },
+            rec.flags,
+            rec.hash32,
+            rec.value.to_vec(),
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

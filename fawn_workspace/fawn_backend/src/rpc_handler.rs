@@ -9,9 +9,8 @@ use fawn_common::err::{FawnError, FawnResult};
 use fawn_common::util::get_node_id;
 
 use crate::meta::Meta;
-use crate::storage::logstore::LogStructuredStore;
+use crate::storage::logstore::{LogStructuredStore, RecordPtr};
 use crate::server::BackendSystemState;
-
 
 type PendingOp = (u32 /*key*/, Vec<u8> /*val*/, u32 /*remaining_pass*/);
 type PendingBuf = BTreeMap<u64 /*timestamp*/, PendingOp>;
@@ -76,7 +75,6 @@ impl BackendHandler {
             timestamp_in
         };
 
-        // TODO: value needs to be attached with a timestamp
         // local append (store on local disk)
         self.storage
             .put(key_id, value.clone())
@@ -84,6 +82,7 @@ impl BackendHandler {
 
         // stop forwarding if no pass_remaining is 0 (tail)
         if pass_remaining == 0 {
+            // TODO: tail should acknowledge the operation
             self.storage.flush()?; // TODO: check whether we need to flush the storage
             return Ok(true);
         }
@@ -160,7 +159,7 @@ impl BackendHandler {
             let request = fawn_common::fawn_backend_api::StoreRequest {
                 key_id,
                 value,
-                timestamp: 0, // TODO: check whether migration cause the head to increment its clock
+                timestamp: 0, // TODO: attached the timestamp from record
                 pass_count: 0, // no further forwarding needed
             };
             let response = client.store_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to send data to predecessor: {}", e)))?;
@@ -217,6 +216,7 @@ impl BackendHandler {
         ts
     }
 
+    // TODO: advance pointer
     fn ack(&self, timestamp: u64) {
         // update the last acked timestamp
         self.last_acked.store(timestamp, Ordering::Relaxed);
