@@ -13,7 +13,7 @@ pub struct NodeInfo {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrateInfo {
     #[prost(message, optional, tag = "1")]
-    pub dest_info: ::core::option::Option<NodeInfo>,
+    pub src_info: ::core::option::Option<NodeInfo>,
     #[prost(uint32, tag = "2")]
     pub start_id: u32,
     #[prost(uint32, tag = "3")]
@@ -28,11 +28,7 @@ pub struct RequestJoinRingRequest {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RequestJoinRingResponse {
-    #[prost(message, optional, tag = "1")]
-    pub successor_info: ::core::option::Option<NodeInfo>,
-    #[prost(message, optional, tag = "2")]
-    pub predecessor_info: ::core::option::Option<NodeInfo>,
-    #[prost(message, repeated, tag = "3")]
+    #[prost(message, repeated, tag = "1")]
     pub migrate_info: ::prost::alloc::vec::Vec<MigrateInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -40,15 +36,10 @@ pub struct RequestJoinRingResponse {
 pub struct FinalizeJoinRingRequest {
     #[prost(message, optional, tag = "1")]
     pub node_info: ::core::option::Option<NodeInfo>,
-    #[prost(bool, tag = "2")]
-    pub migrate_success: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FinalizeJoinRingResponse {
-    #[prost(bool, tag = "1")]
-    pub join_ring_success: bool,
-}
+pub struct FinalizeJoinRingResponse {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NotifyBackendJoinRequest {
@@ -57,10 +48,7 @@ pub struct NotifyBackendJoinRequest {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NotifyBackendJoinResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-}
+pub struct NotifyBackendJoinResponse {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NotifyBackendLeaveRequest {
@@ -69,10 +57,7 @@ pub struct NotifyBackendLeaveRequest {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NotifyBackendLeaveResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-}
+pub struct NotifyBackendLeaveResponse {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRequest {
@@ -84,8 +69,6 @@ pub struct GetRequest {
 pub struct GetResponse {
     #[prost(bytes = "vec", tag = "1")]
     pub value: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bool, tag = "2")]
-    pub success: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -97,10 +80,7 @@ pub struct PutRequest {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PutResponse {
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-}
+pub struct PutResponse {}
 /// Generated client implementations.
 pub mod fawn_frontend_service_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
