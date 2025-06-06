@@ -233,6 +233,10 @@ impl SegmentWriter {
         self.offset += buf.len() as u32;
         Ok(())
     }
+
+    pub fn get_current_offset(&self) -> u32 {
+        self.offset
+    }
 }
 
 pub struct SegmentReader {
