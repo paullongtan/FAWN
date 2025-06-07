@@ -16,3 +16,4 @@ byteorder = "1"     # handy LE helpers for logstore
 tonic = "0.11"
 async-trait = "0.1.88"
 tokio = { version = "1.45.1", features = ["full"] }
+tokio-stream = "0.1"

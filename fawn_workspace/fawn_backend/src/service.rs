@@ -2,14 +2,14 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Response, Status};
+use tokio_stream::wrappers::ReceiverStream;
 use crate::rpc_handler::BackendHandler;
 use fawn_common::fawn_backend_api::fawn_backend_service_server::FawnBackendService;
 use fawn_common::fawn_backend_api::{
-    GetRequest, GetResponse, 
-    MigrateDataRequest, PingRequest, 
-    PingResponse, StoreRequest, StoreResponse,
+    FlushDataResponse, GetRequest, GetResponse, MigrateDataRequest, PingRequest, PingResponse, StoreRequest, StoreResponse
 };
 use fawn_common::err::FawnError;
+use fawn_common::fawn_backend_api::ValueEntry;
 
 pub struct BackendService {
     handler: Arc<Mutex<BackendHandler>>,
@@ -59,40 +59,64 @@ impl FawnBackendService for BackendService {
         Ok(Response::new(StoreResponse {}))
     }
 
+    // the joiner itself is the RPC client
     async fn migrate_data(
         &self,
         request: tonic::Request<MigrateDataRequest>,
     ) -> std::result::Result<
-        tonic::Response<MigrateDataResponse>,
+        tonic::Response<Self::MigrateDataStream>,
         tonic::Status,
     >{
-        let request_node_info = request.into_inner().new_predecessor_info.ok_or_else(|| Status::invalid_argument("new_predecessor_info is required"))?;
-        let request_node_info = fawn_common::types::NodeInfo::from(request_node_info);
-        let service = self.handler.lock().await;
-        let result = service.handle_migrate_data(&request_node_info).await;
-        match result {
-            Ok(success) => {
-                Ok(Response::new(MigrateDataResponse {
-                    success,
-                }))
-            }
-            Err(e) => {
-                if let Some(fawn_err) = e.downcast_ref::<FawnError>() {
-                    match fawn_err {
-                        FawnError::InvalidRequest(msg) => {
-                            Err(Status::invalid_argument(msg))
-                        }
-                        FawnError::SystemError(msg) => {
-                            Err(Status::internal(msg))
-                        }
-                        _ => {
-                            Err(Status::internal(e.to_string()))
-                        }
-                    }
-                } else {
-                    Err(Status::internal(e.to_string()))
+        let msg = request.into_inner();
+        let dest_node_info = msg.dest_info.ok_or_else(|| Status::invalid_argument("dest_info is required"))?;
+        let dest_node_info = fawn_common::types::NodeInfo::from(dest_node_info);
+        
+        let start_id = msg.start_id;
+        let end_id = msg.end_id;
+
+        // build slice from storage
+        let entries = {
+            let handler = self.handler.lock().await;
+            handler.build_migrate_slice((start_id, end_id))
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?
+        }; 
+
+        // create a streaming response
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            for entry in entries {
+                if tx.send(Ok(entry)).await.is_err() {
+                    eprintln!("Failed to send entry during migration");
+                    break; // stop if the receiver is gone
                 }
             }
+        });
+
+        let recv_stream = ReceiverStream::new(rx);
+        Ok(Response::new(recv_stream))
+    }
+
+    async fn flush_data(
+        &self, 
+        request: tonic::Request<tonic::Streaming<ValueEntry>>,
+    ) -> std::result::Result<
+        tonic::Response<FlushDataResponse>,
+        tonic::Status,
+    >{
+        let mut stream = request.into_inner();
+        let handler = self.handler.lock().await;
+
+        // process each entry in the stream
+        while let Some(entry) = stream.message().await? {
+            let key_id = entry.key_id;
+            let value = entry.value;
+
+            // store the value
+            handler.handle_store_value(key_id, value, 0).await
+                .map_err(|e| Status::internal(e.to_string()))?;
         }
+
+        Ok(Response::new(FlushDataResponse {}))
     }
 }

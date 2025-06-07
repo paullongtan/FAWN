@@ -1,4 +1,4 @@
-use fawn_common::fawn_backend_api::{fawn_backend_service_client::FawnBackendServiceClient, StoreRequest};
+use fawn_common::fawn_backend_api::{fawn_backend_service_client::FawnBackendServiceClient, StoreRequest, ValueEntry};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -59,6 +59,7 @@ impl BackendHandler {
         // stop forwarding if no pass_remaining is 0 (tail)
         if pass_remaining == 0 {
             self.ack(ptr)?; // acknowledge the operation
+            self.advance_ptr_to_dest(&self.last_acked_ptr, ptr)?; // advance last_acked_ptr to this record
             return Ok(true);
         }
 
@@ -105,34 +106,87 @@ impl BackendHandler {
         Ok(true)
     }
 
-    pub async fn handle_migrate_data(&self, request_node: &NodeInfo) -> FawnResult<bool> {
-        let prev_predecessor = self.state.prev_predecessor.read().await;
-        let predecessor = self.state.predecessor.read().await;
+    /// Collect every record with key \in (lo, hi] and ptr > last_sent_ptr, 
+    /// convert to ValueEntry, advance last_sent_ptr, and return the vector containing them.
+    pub async fn build_migrate_slice(&self, range: (u32, u32)) -> FawnResult<Vec<ValueEntry>> {
+        let floor = self.last_sent_ptr.lock().unwrap().clone();
 
-        // check if the request node is the predecessor
-        if request_node.id != predecessor.id {
-            return Err(Box::new(FawnError::InvalidRequest("Request node is not the predecessor".to_string())));
+        // Vec<(ptr, flag, key, val)>
+        let records = self.storage
+            .scan_after_ptr_in_range(floor, Some(range))
+            .map_err(|e| FawnError::SystemError(format!("Failed to scan for migration: {}", e)))?;
+
+        // convert to proto entries
+        let entries: Vec<ValueEntry> = records.iter()
+            .filter_map(|(_ptr, flag, k, v)| {
+                if *flag != RecordFlags::Put {
+                    return None; // only migrate Put records
+                }
+            Some(ValueEntry {
+                key_id: *k, 
+                value: v.clone(),
+            })
+        }).collect();
+
+        // advance the last_sent_ptr to the last record pointer
+        if let Some((ptr, ..)) = records.last() {
+            self.advance_ptr_to_dest(&self.last_sent_ptr, *ptr)?;
         }
 
-        let low_id = prev_predecessor.id;
-        let high_id = predecessor.id;
-        // get all key-value pairs in the range (low_id, high_id]
-        let migrate_data_iterator = self.storage.iter_range(low_id, high_id)?;
-        let mut client = FawnBackendServiceClient::connect(request_node.get_http_addr()).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to predecessor: {}", e)))?;
-        
-        // send the key-value pairs to the new predecessor
-        for (key_id, value) in migrate_data_iterator {
-            let request = fawn_common::fawn_backend_api::StoreRequest {
-                key_id,
-                value,
-                pass_count: 0, // no further forwarding needed
-            };
-            let response = client.store_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to send data to predecessor: {}", e)))?;
-            if !response.get_ref().success {
-                return Err(Box::new(FawnError::SystemError("Failed to send data to predecessor".to_string())));
+        Ok(entries)
+    }
+
+    pub async fn send_flush(&self, dest: &NodeInfo) -> FawnResult<()> {
+        let start_ptr = self.last_sent_ptr.lock().unwrap().clone();
+        let records = self.storage
+            .scan_after_ptr_in_range(start_ptr, None)
+            .map_err(|e| FawnError::SystemError(format!("Failed to scan for flush: {}", e)))?;
+
+        if records.is_empty() {
+            return Ok(()); // nothing to flush
+        }
+
+        let mut client = FawnBackendServiceClient::connect(dest.get_http_addr()).await
+            .map_err(|e| FawnError::RpcError(format!("Failed to connect to destination: {}", e)))?;
+
+        // convert Vec -> stream that advances last_sent_ptr after each record send
+        let last_sent_ptr = Arc::clone(&self.last_sent_ptr);
+        let mut last_ptr_sent = None;
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            for (ptr, flag, k, v) in records {
+                if flag != RecordFlags::Put {
+                    continue; // only flush Put records
+                }
+                let entry = ValueEntry {
+                    key_id: k,
+                    value: v.clone(),
+                };
+                if tx.send(entry).await.is_err() {
+                    eprintln!("Failed to send entry during flush");
+                    break; // stop if the receiver is gone
+                }
+
+                // advance last_sent_ptr to the current record ptr
+                let mut guard = last_sent_ptr.lock().unwrap();
+                if *guard < ptr {
+                    *guard = ptr;
+                    last_ptr_sent = Some(ptr);
+                }
             }
+        });
+
+        // wait for flush_data to complete
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        client.flush_data(stream).await
+            .map_err(|e| FawnError::RpcError(format!("Failed to flush data to destination: {}", e)))?;
+
+        // persist the last_sent_ptr if it was advanced
+        if let Some(ptr) = last_ptr_sent {
+            self.advance_ptr_to_dest(&self.last_sent_ptr, ptr)?;
         }
-        Ok(true)
+
+        Ok(())
     }
 
     // should be called once the backend node starts up
@@ -170,6 +224,17 @@ impl BackendHandler {
         if *current < ptr {
             *current = ptr;
             self.persist_meta()?;
+        }
+        Ok(())
+    }
+
+    /// Advances the given pointer (curr_ptr) to dest_ptr if dest_ptr is greater.
+    /// Persists the change if advanced.
+    fn advance_ptr_to_dest(&self, curr_ptr: &Arc<Mutex<RecordPtr>>, dest_ptr: RecordPtr) -> FawnResult<()> {
+        let mut ptr_guard = curr_ptr.lock().unwrap();
+        if *ptr_guard < dest_ptr {
+            *ptr_guard = dest_ptr;
+            self.persist_meta()?; // persist after advancing
         }
         Ok(())
     }

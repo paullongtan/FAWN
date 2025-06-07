@@ -257,6 +257,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tonic",
 ]
 
