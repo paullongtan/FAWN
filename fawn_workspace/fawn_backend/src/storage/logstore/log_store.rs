@@ -307,21 +307,15 @@ impl LogStructuredStore {
         Ok(items.into_iter())
     }
 
-    pub fn scan_after_ptr_in_range(&self, start_ptr: RecordPtr, lo: u32, hi: u32) -> io::Result<Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>> {
+    fn scan_after_ptr_with_filter<F>(
+        &self, 
+        start_ptr: RecordPtr, 
+        filter: F, 
+    ) -> io::Result<Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>>
+    where 
+        F: Fn(u32) -> bool, 
+    {
         let mut results = Vec::new();
-
-        // helper closure for ring range check
-        // if (lo < hi): range is (lo, hi]
-        // if (lo > hi): range is (lo, MAX] U [0, hi]
-        let in_range = |h: u32| -> bool {
-            if lo < hi {
-                lo < h && h <= hi
-            } else if lo > hi {
-                h > lo || h <= hi
-            } else {
-                false // lo == hi, no valid range
-            }
-        };
 
         // sealed segments: reverse order (oldest to newest)
         let sealed = self.sealed.read().unwrap();
@@ -331,7 +325,7 @@ impl LogStructuredStore {
             if seg.meta.id < start_ptr.seg_id {
                 continue;
             }
-            scan_segment_after_ptr(seg, start_ptr, &mut results, &in_range)?;
+            scan_segment_after_ptr(seg, start_ptr, &mut results, &filter)?;
         }
 
         // scan active segment
@@ -342,9 +336,30 @@ impl LogStructuredStore {
             w.meta.clone()
         };
         let active_reader = super::segment::SegmentReader::open(meta)?;
-        scan_segment_after_ptr(&active_reader, start_ptr, &mut results, &in_range)?;
+        scan_segment_after_ptr(&active_reader, start_ptr, &mut results, &filter)?;
         
         Ok(results)
+    }
+
+    pub fn scan_after_ptr_in_range(
+        &self, 
+        start_ptr: RecordPtr, 
+        range: Option<(u32, u32)>
+    ) -> io::Result<Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>> {
+        // if range is None, we scan all records after start_ptr
+        let filter: Box<dyn Fn(u32) -> bool> = match range {
+            Some((lo, hi)) => Box::new(move |h| {
+                if lo < hi {
+                    lo < h && h <= hi
+                } else if lo > hi {
+                    h > lo || h <= hi
+                } else {
+                    false
+                }
+            }),
+            None => Box::new(|_| true),
+        };
+        self.scan_after_ptr_with_filter(start_ptr, filter)
     }
 
     // Private API: for appending records with key bytes
@@ -434,7 +449,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Ok;
     use tempfile::TempDir;
     use fawn_common::util::get_key_id;
 
@@ -750,10 +764,8 @@ mod tests {
 
         // use the second pointer as the start point
         let start_ptr = ptrs[1].2;
-        let lo = 0;
-        let hi = 0xFFFFFFFF; // full range
 
-        let results = store.scan_after_ptr_in_range(start_ptr, lo, hi).unwrap();
+        let results = store.scan_after_ptr_in_range(start_ptr, None).unwrap();
         println!("Scan results after pointer: {:?}", results);
 
         let found_ids: Vec<u32> = results.iter()
