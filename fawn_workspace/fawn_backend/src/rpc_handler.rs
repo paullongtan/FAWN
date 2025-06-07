@@ -52,14 +52,13 @@ impl BackendHandler {
 
     pub async fn handle_store_value(&self, key_id: u32, value: Vec<u8>, pass_remaining: u32) -> FawnResult<bool> {
         // local append (store on local disk)
-        let ptr = self.storage
+        let ptr_after_record = self.storage
             .put(key_id, value.clone())
             .map_err(|e| FawnError::SystemError(format!("Failed to store value due to storage error: {}", e)))?;
 
         // stop forwarding if no pass_remaining is 0 (tail)
         if pass_remaining == 0 {
-            self.ack(ptr)?; // acknowledge the operation
-            self.advance_ptr_to_dest(&self.last_acked_ptr, ptr)?; // advance last_acked_ptr to this record
+            self.advance_ptr_to_dest(&self.last_acked_ptr, ptr_after_record)?; // advance ack pointer
             return Ok(true);
         }
 
@@ -67,7 +66,7 @@ impl BackendHandler {
         match self.forward_once( key_id, value, pass_remaining - 1).await? {
             // successor has acked the operation
             true => { 
-                self.ack(ptr)?; // acknowledge the operation
+                self.advance_ptr_to_dest(&self.last_acked_ptr, ptr_after_record)?; // advance ack pointer
                 Ok(true) // delivered & ACKed
             }, 
             false => Err(Box::new(FawnError::RpcError("transport failure".into()))), // let the caller replay the operation
@@ -195,7 +194,7 @@ impl BackendHandler {
             .scan_after_ptr_in_range(self.last_acked_ptr.lock().unwrap().clone(), None)?;
 
         // replay each Put record after the last acked pointer
-        for (ptr, flag, key_id, value) in ops.drain(..) {
+        for (ptr_after_record, flag, key_id, value) in ops.drain(..) {
             if flag != RecordFlags::Put {
                 continue; // only replay Put for now
             }
@@ -204,7 +203,7 @@ impl BackendHandler {
             loop {
                 match self.forward_once(key_id, value.clone(), 0).await {
                     Ok(true) => {
-                        self.ack(ptr)?; // ack and break out of retry loop
+                        self.advance_ptr_to_dest(&self.last_acked_ptr, ptr_after_record)?; // advance ack pointer
                         break;
                     }
                     Ok(false) | Err(_) => {
@@ -218,16 +217,6 @@ impl BackendHandler {
         Ok(())
     }
 
-    // advance the last_acked_ptr to the given record pointer
-    fn ack(&self, ptr: RecordPtr) -> FawnResult<()> {
-        let mut current = self.last_acked_ptr.lock().unwrap();
-        if *current < ptr {
-            *current = ptr;
-            self.persist_meta()?;
-        }
-        Ok(())
-    }
-
     /// Advances the given pointer (curr_ptr) to dest_ptr if dest_ptr is greater.
     /// Persists the change if advanced.
     fn advance_ptr_to_dest(&self, curr_ptr: &Arc<Mutex<RecordPtr>>, dest_ptr: RecordPtr) -> FawnResult<()> {
@@ -238,6 +227,7 @@ impl BackendHandler {
         }
         Ok(())
     }
+
 
     fn persist_meta(&self) -> std::io::Result<()>  {
         let m = Meta {
