@@ -5,8 +5,9 @@ use fawn_common::fawn_frontend_api::{fawn_frontend_service_server::FawnFrontendS
 use crate::node::FrontendNode;
 use tokio::time::{timeout, Duration};
 
-mod node;
 mod rpc_handler;
+mod service;
+mod server;
 mod backend_manager;
 
 fn main() {
