@@ -138,7 +138,7 @@ impl BackendHandler {
     // should be called once the backend node starts up
     pub async fn replay_unacked_ops(&self) -> FawnResult<()> {
         let mut ops = self.storage
-            .scan_after_ptr_in_range(self.last_acked_ptr.lock().unwrap().clone(), 0, u32::MAX)?;
+            .scan_after_ptr_in_range(self.last_acked_ptr.lock().unwrap().clone(), None)?;
 
         // replay each Put record after the last acked pointer
         for (ptr, flag, key_id, value) in ops.drain(..) {
