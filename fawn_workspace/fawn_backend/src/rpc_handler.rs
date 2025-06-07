@@ -1,24 +1,34 @@
 use fawn_common::fawn_backend_api::{fawn_backend_service_client::FawnBackendServiceClient, StoreRequest};
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use fawn_common::types::NodeInfo;
 use fawn_common::err::{FawnError, FawnResult};
 use fawn_common::util::get_node_id;
 
-use crate::storage::logstore::LogStructuredStore;
+use crate::meta::Meta;
+use crate::storage::logstore::{LogStructuredStore, RecordPtr, RecordFlags};
 use crate::server::BackendSystemState;
+
+// type PendingOp = (u32 /*key*/, Vec<u8> /*val*/, u32 /*remaining_pass*/);
 
 #[derive(Clone)]
 pub struct BackendHandler {
     storage: Arc<LogStructuredStore>,
     state: Arc<BackendSystemState>,
+    last_acked_ptr: Arc<Mutex<RecordPtr>>, // pointer to last acked record
+    last_sent_ptr: Arc<Mutex<RecordPtr>>, // pointer to last sent record (for pre-copy)
+    meta_path: PathBuf, // Path to the metadata file
 }
 
 impl BackendHandler {
-    pub fn new(storage: LogStructuredStore, state: Arc<BackendSystemState>) -> FawnResult<Self> {
+    pub fn new(storage: LogStructuredStore, state: Arc<BackendSystemState>, meta: Meta, meta_path: PathBuf) -> FawnResult<Self> {
         Ok(Self {
             storage: Arc::new(storage),
             state,
+            last_acked_ptr: Arc::new(Mutex::new(meta.last_acked_ptr)),
+            last_sent_ptr: Arc::new(Mutex::new(meta.last_sent_ptr)),
+            meta_path,
         })
     }
 
@@ -40,14 +50,44 @@ impl BackendHandler {
         }
     }
 
-    pub fn handle_store_value(&self, key_id: u32, value: Vec<u8>) -> FawnResult<bool> {
-        match self.storage.put(key_id, value) {
-            Ok(()) => {
-                Ok(true)
-            }
-            Err(e) => {
-                Err(Box::new(FawnError::SystemError(format!("Failed to store value due to storage error: {}", e))))
-            }
+    pub async fn handle_store_value(&self, key_id: u32, value: Vec<u8>, pass_remaining: u32) -> FawnResult<bool> {
+        // local append (store on local disk)
+        let ptr = self.storage
+            .put(key_id, value.clone())
+            .map_err(|e| FawnError::SystemError(format!("Failed to store value due to storage error: {}", e)))?;
+
+        // stop forwarding if no pass_remaining is 0 (tail)
+        if pass_remaining == 0 {
+            self.ack(ptr)?; // acknowledge the operation
+            return Ok(true);
+        }
+
+        // forward the store request to the successor
+        match self.forward_once( key_id, value, pass_remaining - 1).await? {
+            // successor has acked the operation
+            true => { 
+                self.ack(ptr)?; // acknowledge the operation
+                Ok(true) // delivered & ACKed
+            }, 
+            false => Err(Box::new(FawnError::RpcError("transport failure".into()))), // let the caller replay the operation
+        }
+    }
+
+    async fn forward_once(&self, key_id: u32, value: Vec<u8>, pass_remaining_next: u32) -> FawnResult<bool> {
+        let successor = self.state.successor.read().await.clone();
+        let mut client = FawnBackendServiceClient::connect(successor.get_http_addr()).await
+            .map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
+
+        let request = StoreRequest {
+            key_id,
+            value,
+            pass_count: pass_remaining_next,
+        }; 
+
+        // TODO: check whether to separate transport errors from application errors
+        match client.store_value(request).await {
+            Ok(_) => Ok(true), // delivered & ACKed
+            Err(_) => Ok(false), // map every error as a transport failure, caller should retry
         }
     }
 
@@ -85,6 +125,7 @@ impl BackendHandler {
             let request = fawn_common::fawn_backend_api::StoreRequest {
                 key_id,
                 value,
+                pass_count: 0, // no further forwarding needed
             };
             let response = client.store_value(request).await.map_err(|e| FawnError::RpcError(format!("Failed to send data to predecessor: {}", e)))?;
             if !response.get_ref().success {
@@ -92,5 +133,52 @@ impl BackendHandler {
             }
         }
         Ok(true)
+    }
+
+    // should be called once the backend node starts up
+    pub async fn replay_unacked_ops(&self) -> FawnResult<()> {
+        let mut ops = self.storage
+            .scan_after_ptr_in_range(self.last_acked_ptr.lock().unwrap().clone(), 0, u32::MAX)?;
+
+        // replay each Put record after the last acked pointer
+        for (ptr, flag, key_id, value) in ops.drain(..) {
+            if flag != RecordFlags::Put {
+                continue; // only replay Put for now
+            }
+
+            // keep retrying until successfully forwarded
+            loop {
+                match self.forward_once(key_id, value.clone(), 0).await {
+                    Ok(true) => {
+                        self.ack(ptr)?; // ack and break out of retry loop
+                        break;
+                    }
+                    Ok(false) | Err(_) => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        continue; // retry the operation
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // advance the last_acked_ptr to the given record pointer
+    fn ack(&self, ptr: RecordPtr) -> FawnResult<()> {
+        let mut current = self.last_acked_ptr.lock().unwrap();
+        if *current < ptr {
+            *current = ptr;
+            self.persist_meta()?;
+        }
+        Ok(())
+    }
+
+    fn persist_meta(&self) -> std::io::Result<()>  {
+        let m = Meta {
+            last_acked_ptr: self.last_acked_ptr.lock().unwrap().clone(),
+            last_sent_ptr: self.last_sent_ptr.lock().unwrap().clone(),
+        }; 
+        m.store(&self.meta_path)
     }
 }

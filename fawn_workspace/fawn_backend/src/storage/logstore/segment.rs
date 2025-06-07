@@ -8,6 +8,8 @@ use std::{
 };
 use memmap2::Mmap;
 
+use crate::storage::logstore::pointer::RecordPtr;
+
 use super::record::{self, Record, RecordFlags};
 
 /// Small metadata carrier shared by writer & reader.
@@ -232,6 +234,10 @@ impl SegmentWriter {
         self.in_mem_idx.insert(hash, self.offset);
         self.offset += buf.len() as u32;
         Ok(())
+    }
+
+    pub fn get_current_offset(&self) -> u32 {
+        self.offset
     }
 }
 

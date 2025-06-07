@@ -4,7 +4,9 @@ TODO:
 */
 
 use super::segment::{SegmentInfo, SegmentWriter, SegmentReader};
+use super::pointer::RecordPtr;
 use super::record::{self, Record, RecordFlags};
+use std::result;
 use std::{
     fs, io::{self, Write}, os::unix::fs::FileExt, path::PathBuf, sync::{Mutex, RwLock}, time::{Duration, Instant}
 };
@@ -143,24 +145,32 @@ impl LogStructuredStore {
     }
 
     /// Let user directly put a record using a hashed key using their own hash function.
-    pub fn put(&self, hashed_key: u32, value: Vec<u8>) -> io::Result<()> {
+    pub fn put(&self, hashed_key: u32, value: Vec<u8>) -> io::Result<RecordPtr> {
         let key = EMPTY_KEY; // we don't use the key here, just the hash
         let len_needed = super::record::FIXED_HDR + key.len() + value.len() + 4; // 4 for CRC32
         let mut writer = self.active.lock().unwrap();
 
-        // check if we need to roll the segment
+        // check if we need to roll the segment (no record crossing allowed)
         if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
             self.roll_segment(&mut *writer)?;
         }
 
+        let offset_before = writer.get_current_offset();
+
         // append the record
         writer.append_put(hashed_key, key, &value)?;
 
-        self.check_periodic_flush(&mut *writer)
+        self.check_periodic_flush(&mut *writer)?;
+
+        // return the pointer to the head of the record
+        Ok(RecordPtr {
+            seg_id: writer.meta.id,
+            offset: offset_before, 
+        })        
     }
 
 
-    pub fn delete(&self, hashed_key: u32) -> io::Result<()> {
+    pub fn delete(&self, hashed_key: u32) -> io::Result<RecordPtr> {
         let key = EMPTY_KEY; // we don't use the key here, just the hash
         let len_needed = super::record::FIXED_HDR + key.len() + 4; // 4 for CRC32
         let mut writer = self.active.lock().unwrap();
@@ -169,11 +179,19 @@ impl LogStructuredStore {
         if writer.bytes_written() + len_needed as u32 > self.max_seg_size {
             self.roll_segment(&mut *writer)?;
         }
+
+        let offset_before = writer.get_current_offset();
         
         // append the delete record
         writer.append_delete(hashed_key, key)?;
 
-        self.check_periodic_flush(&mut *writer)
+        self.check_periodic_flush(&mut *writer)?;
+
+        // return the pointer to the head of the record
+        Ok(RecordPtr {
+            seg_id: writer.meta.id,
+            offset: offset_before, 
+        })        
     }
 
 
@@ -289,6 +307,46 @@ impl LogStructuredStore {
         Ok(items.into_iter())
     }
 
+    pub fn scan_after_ptr_in_range(&self, start_ptr: RecordPtr, lo: u32, hi: u32) -> io::Result<Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>> {
+        let mut results = Vec::new();
+
+        // helper closure for ring range check
+        // if (lo < hi): range is (lo, hi]
+        // if (lo > hi): range is (lo, MAX] U [0, hi]
+        let in_range = |h: u32| -> bool {
+            if lo < hi {
+                lo < h && h <= hi
+            } else if lo > hi {
+                h > lo || h <= hi
+            } else {
+                false // lo == hi, no valid range
+            }
+        };
+
+        // sealed segments: reverse order (oldest to newest)
+        let sealed = self.sealed.read().unwrap();
+
+        // scan sealed segments from oldest to newest
+        for seg in sealed.iter().rev() {
+            if seg.meta.id < start_ptr.seg_id {
+                continue;
+            }
+            scan_segment_after_ptr(seg, start_ptr, &mut results, &in_range)?;
+        }
+
+        // scan active segment
+        // flush footer and clone meta of active segment
+        let meta = {
+            let mut w = self.active.lock().unwrap();
+            w.flush_footer()?;
+            w.meta.clone()
+        };
+        let active_reader = super::segment::SegmentReader::open(meta)?;
+        scan_segment_after_ptr(&active_reader, start_ptr, &mut results, &in_range)?;
+        
+        Ok(results)
+    }
+
     // Private API: for appending records with key bytes
     fn _put_with_key(&self, key: Vec<u8>, val: Vec<u8>) -> io::Result<()> {
         let len_needed = super::record::FIXED_HDR + key.len() + val.len() + 4; // 4 for CRC32
@@ -341,16 +399,49 @@ impl LogStructuredStore {
 }
 
 
+fn scan_segment_after_ptr<F>(
+    seg: &SegmentReader,
+    start_ptr: RecordPtr,
+    results: &mut Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>,
+    in_range: F,
+) -> io::Result<()>
+where
+    F: Fn(u32) -> bool,
+{
+    let seg_id = seg.meta.id;
+    for (_hash, offset) in seg.footer_pairs() {
+        if seg_id == start_ptr.seg_id && offset <= start_ptr.offset {
+            continue;
+        }
+
+        let buf = seg.read_record_bytes(offset)?;
+        let rec = super::record::Record::decode(&mut &buf[..])?;
+
+        if !in_range(rec.hash32) {
+            continue;
+        }
+
+        results.push((
+            RecordPtr { seg_id, offset },
+            rec.flags,
+            rec.hash32,
+            rec.value.to_vec(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Ok;
     use tempfile::TempDir;
     use fawn_common::util::get_key_id;
 
     #[test]
-    fn test_log_store_basic() -> io::Result<()> {
-        let temp_dir = TempDir::new()?;
-        let store = LogStructuredStore::open(temp_dir.path())?;
+    fn test_log_store_basic() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = LogStructuredStore::open(temp_dir.path()).unwrap();
 
         // put some records using hashed key ids
         let key1 = "key1";
@@ -362,25 +453,23 @@ mod tests {
         let id3 = get_key_id(key3);
         let id4 = get_key_id(key4);
 
-        store.put(id1, b"value1".to_vec())?;
-        store.put(id2, b"value2".to_vec())?;
-        store.put(id3, b"value3".to_vec())?;
+        store.put(id1, b"value1".to_vec());
+        store.put(id2, b"value2".to_vec());
+        store.put(id3, b"value3".to_vec());
 
         // get records using hashed key ids
-        assert_eq!(store.get(id1)?, Some(b"value1".to_vec()));
-        assert_eq!(store.get(id2)?, Some(b"value2".to_vec()));
-        assert_eq!(store.get(id3)?, Some(b"value3".to_vec()));
-        assert_eq!(store.get(id4)?, None); // not found
+        assert_eq!(store.get(id1).unwrap(), Some(b"value1".to_vec()));
+        assert_eq!(store.get(id2).unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(store.get(id3).unwrap(), Some(b"value3".to_vec()));
+        assert_eq!(store.get(id4).unwrap(), None); // not found
 
         // delete a record using hashed key id
-        store.delete(id2)?;
-        assert_eq!(store.get(id2)?, None); // should be deleted
+        store.delete(id2);
+        assert_eq!(store.get(id2).unwrap(), None); // should be deleted
 
         // put another record to key2
-        store.put(id2, b"value2_updated".to_vec())?;
-        assert_eq!(store.get(id2)?, Some(b"value2_updated".to_vec()));
-
-        Ok(())
+        store.put(id2, b"value2_updated".to_vec());
+        assert_eq!(store.get(id2).unwrap(), Some(b"value2_updated".to_vec()));
     }
 
     #[test]
@@ -635,4 +724,43 @@ mod tests {
         assert!(results.is_empty(), "Empty range should return no results");
     }
 
+    #[test]
+    fn test_scan_after_ptr_in_range() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = LogStructuredStore::open(temp_dir.path()).unwrap();
+
+        // insert records with known keys, values, and ids
+        let keys = vec!["a", "b", "c", "d"];    
+        let values = vec![b"va", b"vb", b"vc", b"vd"];
+
+        let mut ptrs = Vec::new(); // (id, ptr)
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            let id = get_key_id(k);
+            let ptr = store.put(id, v.to_vec()).unwrap();
+            ptrs.push((k, id, ptr));
+        }
+
+        println!("Inserted records with pointers: {:?}", ptrs);
+
+        // sort pointers for predictable order
+        ptrs.sort_by_key(|(_k, _id, ptr)| *ptr);
+
+        println!("Sorted pointers: {:?}", ptrs);
+
+        // use the second pointer as the start point
+        let start_ptr = ptrs[1].2;
+        let lo = 0;
+        let hi = 0xFFFFFFFF; // full range
+
+        let results = store.scan_after_ptr_in_range(start_ptr, lo, hi).unwrap();
+        println!("Scan results after pointer: {:?}", results);
+
+        let found_ids: Vec<u32> = results.iter()
+            .map(|(_, _, id, _)| *id)
+            .collect();
+        let expected_ids: Vec<u32> = vec![ptrs[2].1, ptrs[3].1];
+
+        assert_eq!(found_ids, expected_ids, "Should find records after the start pointer");
+    }
 }

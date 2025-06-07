@@ -1,3 +1,4 @@
+use fawn_backend::meta::Meta;
 use server::BackendServer;
 use storage::logstore::LogStructuredStore;
 use fawn_common::err::{FawnError, FawnResult};
@@ -7,6 +8,7 @@ mod storage;
 mod server;
 mod rpc_handler;
 mod service;
+mod meta;
 
 fn main() -> FawnResult<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -16,11 +18,21 @@ fn main() -> FawnResult<()> {
     }
     let config = read_config(&args[1]);
 
+    // initialize a metadata file
+    let meta_path = Path::new(&config.storage_dir).join("meta.bin");
+    let meta = Meta::load(&meta_path)
+        .map_err(|e| FawnError::SystemError(format!("Failed to load metadata: {}", e)))?;
+
+    // TODO: should storage knows where the last fully-acked timestamp is?
     let storage = LogStructuredStore::open(&config.storage_dir).map_err(|e| FawnError::SystemError(format!("Failed to open storage: {}", e)))?;
-    let mut server = BackendServer::new(config.fronts, config.address).map_err(|e| FawnError::SystemError(format!("Failed to create backend server: {}", e)))?;
+
+    let mut server = BackendServer::new(
+        config.fronts, 
+        config.address, 
+    ).map_err(|e| FawnError::SystemError(format!("Failed to create backend server: {}", e)))?;
 
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        server.start(storage).await?;
+        server.start(storage, meta, meta_path).await?;
         Ok(())
     })
 }

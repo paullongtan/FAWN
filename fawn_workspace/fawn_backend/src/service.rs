@@ -5,18 +5,10 @@ use tonic::{Response, Status};
 use crate::rpc_handler::BackendHandler;
 use fawn_common::fawn_backend_api::fawn_backend_service_server::FawnBackendService;
 use fawn_common::fawn_backend_api::{
-    PingRequest, 
-    PingResponse, 
-    GetRequest, 
-    GetResponse, 
-    StoreRequest, 
-    StoreResponse, 
-    UpdateSuccessorRequest, 
-    UpdateSuccessorResponse, 
-    PrepareForSplitRequest, 
-    PrepareForSplitResponse, 
-    MigrateDataRequest,
-    MigrateDataResponse};
+    GetRequest, GetResponse, 
+    MigrateDataRequest, PingRequest, 
+    PingResponse, StoreRequest, StoreResponse,
+};
 use fawn_common::err::FawnError;
 
 pub struct BackendService {
@@ -60,40 +52,13 @@ impl FawnBackendService for BackendService {
         let inner = request.into_inner();
         let key_id = inner.key_id;
         let value = inner.value;
-        let success = self.handler.lock().await.handle_store_value(key_id, value).map_err(|e| Status::internal(e.to_string()))?  ;
-        Ok(Response::new(StoreResponse {
-            success,
-        }))
+        let pass_remaining = inner.pass_count;
+        let success = self.handler.lock().await
+                            .handle_store_value(key_id, value, pass_remaining).await
+                            .map_err(|e| Status::internal(e.to_string()))?  ;
+        Ok(Response::new(StoreResponse {}))
     }
 
-    async fn update_successor(
-        &self,
-        request: tonic::Request<UpdateSuccessorRequest>,
-    ) -> std::result::Result<
-        tonic::Response<UpdateSuccessorResponse>,
-        tonic::Status,
-    >{
-        let successor_info = request.into_inner().successor_info.ok_or_else(|| Status::invalid_argument("successor_info is required"))?;
-        let successor_info = fawn_common::types::NodeInfo::from(successor_info);
-        let success = self.handler.lock().await.handle_update_successor(&successor_info).await.map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(UpdateSuccessorResponse {
-            success,
-        }))
-    }
-    async fn prepare_for_split(
-        &self,
-        request: tonic::Request<PrepareForSplitRequest>,
-    ) -> std::result::Result<
-        tonic::Response<PrepareForSplitResponse>,
-        tonic::Status,
-    >{
-        let new_predecessor_info = request.into_inner().new_predecessor_info.ok_or_else(|| Status::invalid_argument("new_predecessor_info is required"))?;
-        let new_predecessor_info = fawn_common::types::NodeInfo::from(new_predecessor_info);
-        let success = self.handler.lock().await.handle_prepare_for_split(&new_predecessor_info).await.map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(PrepareForSplitResponse {
-            success,
-        }))
-    }
     async fn migrate_data(
         &self,
         request: tonic::Request<MigrateDataRequest>,
