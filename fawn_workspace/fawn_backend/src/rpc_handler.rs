@@ -141,7 +141,7 @@ impl BackendHandler {
             .scan_after_ptr_in_range(self.last_acked_ptr.lock().unwrap().clone(), None)?;
 
         // replay each Put record after the last acked pointer
-        for (ptr, flag, key_id, value) in ops.drain(..) {
+        for (ptr_after_record, flag, key_id, value) in ops.drain(..) {
             if flag != RecordFlags::Put {
                 continue; // only replay Put for now
             }
@@ -150,7 +150,7 @@ impl BackendHandler {
             loop {
                 match self.forward_once(key_id, value.clone(), 0).await {
                     Ok(true) => {
-                        self.ack(ptr)?; // ack and break out of retry loop
+                        self.advance_ptr_to_dest(&self.last_acked_ptr, ptr_after_record)?; // advance ack pointer
                         break;
                     }
                     Ok(false) | Err(_) => {
