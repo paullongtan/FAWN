@@ -155,17 +155,15 @@ impl LogStructuredStore {
             self.roll_segment(&mut *writer)?;
         }
 
-        let offset_before = writer.get_current_offset();
-
         // append the record
         writer.append_put(hashed_key, key, &value)?;
 
         self.check_periodic_flush(&mut *writer)?;
 
-        // return the pointer to the head of the record
+        // return the pointer to the tail of the record
         Ok(RecordPtr {
             seg_id: writer.meta.id,
-            offset: offset_before, 
+            offset: writer.get_current_offset(), 
         })        
     }
 
