@@ -305,6 +305,63 @@ impl LogStructuredStore {
         Ok(items.into_iter())
     }
 
+    fn scan_between_ptr_with_filter<F>(
+        &self, 
+        start_ptr: RecordPtr, 
+        end_ptr: RecordPtr,
+        filter: F, 
+    ) -> io::Result<Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>>
+    where 
+        F: Fn(u32) -> bool, 
+    {
+        let mut results = Vec::new();
+
+        // sealed segments: reverse order (oldest to newest)
+        let sealed = self.sealed.read().unwrap();
+
+        // scan sealed segments from oldest to newest
+        for seg in sealed.iter().rev() {
+            if seg.meta.id < start_ptr.seg_id {
+                continue;
+            }
+            scan_segment_between_ptr(seg, start_ptr, end_ptr, &mut results, &filter)?;
+        }
+
+        // scan active segment
+        // flush footer and clone meta of active segment
+        let meta = {
+            let mut w = self.active.lock().unwrap();
+            w.flush_footer()?;
+            w.meta.clone()
+        };
+        let active_reader = super::segment::SegmentReader::open(meta)?;
+        scan_segment_between_ptr(&active_reader, start_ptr, end_ptr, &mut results, &filter)?;
+        
+        Ok(results)
+    }
+
+    pub fn scan_between_ptr_in_range(
+        &self, 
+        start_ptr: RecordPtr, 
+        end_ptr: RecordPtr,
+        range: Option<(u32, u32)>
+    ) -> io::Result<Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>> {
+        // if range is None, we scan all records after start_ptr
+        let filter: Box<dyn Fn(u32) -> bool> = match range {
+            Some((lo, hi)) => Box::new(move |h| {
+                if lo < hi {
+                    lo < h && h <= hi
+                } else if lo > hi {
+                    h > lo || h <= hi
+                } else {
+                    false
+                }
+            }),
+            None => Box::new(|_| true),
+        };
+        self.scan_between_ptr_with_filter(start_ptr, end_ptr, filter)
+    }
+
     fn scan_after_ptr_with_filter<F>(
         &self, 
         start_ptr: RecordPtr, 
@@ -443,6 +500,42 @@ where
     }
     Ok(())
 }
+
+fn scan_segment_between_ptr<F>(
+    seg: &SegmentReader,
+    start_ptr: RecordPtr,
+    end_ptr: RecordPtr,
+    results: &mut Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>,
+    in_range: F,
+) -> io::Result<()>
+where
+    F: Fn(u32) -> bool,
+{
+    let seg_id = seg.meta.id;
+    for (_hash, offset) in seg.footer_pairs() {
+        if seg_id == start_ptr.seg_id && offset < start_ptr.offset {
+            continue;
+        } else if seg_id == end_ptr.seg_id && offset > end_ptr.offset {
+            continue; // skip if beyond the end pointer
+        }
+
+        let buf = seg.read_record_bytes(offset)?;
+        let rec = super::record::Record::decode(&mut &buf[..])?;
+
+        if !in_range(rec.hash32) {
+            continue;
+        }
+
+        results.push((
+            RecordPtr { seg_id, offset },
+            rec.flags,
+            rec.hash32,
+            rec.value.to_vec(),
+        ));
+    }
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {
