@@ -1,9 +1,9 @@
 use fawn_common::types::NodeInfo;
 
 pub struct MigrateInfo {
-    src_info: NodeInfo,
-    start_id: u32,
-    end_id: u32,
+    pub src_info: NodeInfo,
+    pub start_id: u32,
+    pub end_id: u32,
 }
 
 impl From<MigrateInfo> for fawn_common::fawn_frontend_api::MigrateInfo {

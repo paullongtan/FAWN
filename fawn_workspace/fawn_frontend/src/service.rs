@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use std::sync::{Arc, atomic::Ordering};
-use tokio::sync::Mutex;
 use tonic::{Response, Status};
 use crate::rpc_handler::FrontendHandler;
 use crate::server::FrontendSystemState;
@@ -62,12 +61,16 @@ impl FawnFrontendService for FrontendService {
         let node_info = inner.node_info.ok_or_else(|| 
             Status::invalid_argument("node_info is required"))?;
         let request_node = fawn_common::types::NodeInfo::from(node_info);
+        let predecessor = self.state.backend_manager.find_predecessor(request_node.id).await;
+        let successor = self.state.backend_manager.find_successor(request_node.id).await;
 
         let migrate_info = self.handler.handle_request_join_ring(request_node)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         let migrate_info = migrate_info.into_iter().map(|info| info.into()).collect();
         Ok(Response::new(RequestJoinRingResponse {
+            predecessor: predecessor.map(|n| n.into()),
+            successor: successor.map(|n| n.into()),
             migrate_info,
         }))
     }

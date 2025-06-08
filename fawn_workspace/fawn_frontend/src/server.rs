@@ -36,7 +36,7 @@ impl FrontendSystemState {
 
         Ok(Self {
             ready: AtomicBool::new(false),
-            backend_manager: Arc::new(BackendManager::new(vec![], replication_count)),
+            backend_manager: Arc::new(BackendManager::new(vec![], replication_count as usize)),
             fronts,
             chain_members: Arc::new(RwLock::new(vec![])), // no backend at system start
             this,

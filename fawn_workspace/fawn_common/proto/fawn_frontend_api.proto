@@ -32,7 +32,10 @@ message RequestJoinRingRequest {
 
 message RequestJoinRingResponse {
     repeated MigrateInfo migrate_info = 1;
+    NodeInfo successor = 2;
+    NodeInfo predecessor = 3;
 }
+
 
 message FinalizeJoinRingRequest {
     NodeInfo node_info = 1;

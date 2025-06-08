@@ -20,6 +20,7 @@ service FawnBackendService {
     rpc FlushData (stream ValueEntry) returns (FlushDataResponse);
     // after pre-copy stage, updating the chain member
     rpc UpdateChainMember(ChainMemberInfo) returns (UpdateChainMemberResponse);
+    rpc TriggerFlush(TriggerFlushRequest) returns (TriggerFlushResponse);
 }
 
 message NodeInfo {
@@ -66,11 +67,15 @@ message FlushDataResponse {
 }
 
 message ChainMemberInfo {
-    NodeInfo predecessor = 1; // the predecessor of the new node should update its successor to the new node
-    NodeInfo new_node = 2; // the new node
-    NodeInfo successor = 3; // the successor of the new node should update its predecessor to the new node
-    NodeInfo old_tail = 4; // the old tail node should flush the data received after pre-copy stage to the new node
+    repeated NodeInfo chain_members = 1;
 }
 
 message UpdateChainMemberResponse {
+}
+
+message TriggerFlushRequest {
+    NodeInfo new_node = 1;
+}
+
+message TriggerFlushResponse {
 }

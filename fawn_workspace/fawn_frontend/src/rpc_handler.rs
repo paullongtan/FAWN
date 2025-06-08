@@ -8,6 +8,10 @@ use fawn_common::err::{FawnError, FawnResult};
 use fawn_common::util::get_key_id;
 use fawn_common::fawn_backend_api::fawn_backend_service_client::FawnBackendServiceClient;
 use fawn_common::fawn_frontend_api::fawn_frontend_service_client::FawnFrontendServiceClient;
+use fawn_common::fawn_backend_api::{
+    ChainMemberInfo,
+    TriggerFlushRequest,
+};
 use tonic::Request;
 use fawn_common::fawn_frontend_api::NotifyBackendJoinRequest;
 use tonic::Status;
@@ -26,79 +30,78 @@ impl FrontendHandler {
         &self,
         new_node: NodeInfo,
     ) -> FawnResult<Vec<MigrateInfo>> {
-    
-        todo!("Update to support chain replication joins");
-    
-        // // check if the new backend is within its chains
-        // let is_within_chains = self.state.is_within_chains(request_node.id);
-    
-        // // if the new backend is not within its chains, the frontend returns empty migrate info
-        // if !is_within_chains {
-        //     return Ok(Response::new(RequestJoinRingResponse {
-        //         migrate_info: vec![],
-        //     }));
-        // }
-    
-        // // frontend calculate the migrate info for the new backend
-        // let migrate_info = self.state.calculate_migrate_info(request_node.id);
-    
-        let successor = self.backend_manager.find_successor(new_node.id).await;
-        let predecessor = self.backend_manager.find_predecessor(new_node.id).await;
-    
-        if successor.is_none() || predecessor.is_none() {
-            return Ok((new_node.clone(), new_node.clone()));
+        // get affected chains
+        let updated_chain_infos = self.backend_manager.get_updated_chain(new_node).await;
+
+        // caluculate data range to migrate for each chain
+        // range: (predecessor, head node]
+        let mut migrate_list = Vec::new();
+        for (chain, data_src, predecessor) in updated_chain_infos {
+            let head_node = chain.first().unwrap();
+            let start_id = predecessor.id;
+            let end_id = head_node.id;
+            migrate_list.push(MigrateInfo {
+                src_info: data_src.clone(),
+                start_id,
+                end_id,
+            });
         }
-    
-        let successor = successor.unwrap();
-        let predecessor = predecessor.unwrap();
-    
-        // Notify the successor and predecessor of the new node
-        let successor_addr = successor.get_http_addr();
-        let predecessor_addr = predecessor.get_http_addr();
-        let mut successor_client = FawnBackendServiceClient::connect(successor_addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
-        let mut predecessor_client = FawnBackendServiceClient::connect(predecessor_addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to predecessor: {}", e)))?;
-    
-        // Prepare the successor of the new node for the split and update the successor's predecessor to the new node
-        successor_client.prepare_for_split(PrepareForSplitRequest {
-            new_predecessor_info: Some(new_node.clone().into()),
-        }).await?;
-    
-        // Update the predecessor of the new node
-        predecessor_client.update_successor(UpdateSuccessorRequest {
-            successor_info: Some(new_node.clone().into()),
-        }).await?;
-        
-        Ok((successor, predecessor))
+        Ok(migrate_list)
     }
     
     pub async fn handle_finalize_join_ring(
         &self,
         new_node: NodeInfo,
     ) -> Result<(), Status> {
-    
-        // add the new node to the active backend list if the migration was successful
-        if migrate_success {
-            backend_manager.add_backend(new_node.clone()).await;
+        // for each of the chain that the new node is in, call update chain member on the head node
+        let updated_chain_infos = self.backend_manager.get_updated_chain(new_node.clone()).await;
+        for (chain, old_tail, _) in updated_chain_infos {
+            let head_node = chain.first().unwrap();
+            let addr = head_node.get_http_addr();
+            let mut head_client = FawnBackendServiceClient::connect(addr)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to connect to backend: {}", e)))?;
+            let request = Request::new(ChainMemberInfo {
+                chain_members: chain.clone().into_iter().map(|n| n.into()).collect(),
+            });
+            head_client
+                .update_chain_member(request)
+                .await
+                .map_err(|e| {
+                    Status::internal(format!("Failed to update chain member: {}", e))
+                })?;
+
+            let old_tail_addr = old_tail.get_http_addr();
+            let mut old_tail_client = FawnBackendServiceClient::connect(old_tail_addr)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to connect to backend: {}", e)))?;
+            let flush_request = Request::new(TriggerFlushRequest {
+                new_node: Some(new_node.clone().into()),
+            });
+            old_tail_client
+                .trigger_flush(flush_request)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to trigger flush: {}", e)))?;
         }
-    
+
+        // add the new node to the backend list
+        self.backend_manager.add_backend(new_node.clone()).await;
+
         // notify other frontends of the new node's node info to update their backend list
-        for i in 0..fronts.len() {
-            if i != this {
-                let addr = fronts[i].get_http_addr();
-                let mut client = FawnFrontendServiceClient::connect(addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to frontend: {}", e)))?;
+        for i in 0..self.state.fronts.len() {
+            if i != self.state.this {
+                let addr = self.state.fronts[i].get_http_addr();
+                let mut client = FawnFrontendServiceClient::connect(addr).await.map_err(|e| Status::internal(format!("Failed to connect to frontend: {}", e)))?;
                 let request = Request::new(NotifyBackendJoinRequest {
                     backend_info: Some(new_node.clone().into())
                 });
-                let response = client.notify_backend_join(request).await.map_err(|e| FawnError::RpcError(format!("Failed to notify other frontends: {}", e)))?;
-                if !response.get_ref().success {
-                    return Err(Box::new(FawnError::SystemError("Failed to notify other frontends".to_string())));
-                }
+                client.notify_backend_join(request).await.map_err(|e| Status::internal(format!("Failed to notify other frontends: {}", e)))?;
             }
         }
     
         println!("Backend {} joined the ring successfully", new_node.get_http_addr());
     
-        Ok(true)
+        Ok(())
     }
     
     pub async fn handle_get_value(

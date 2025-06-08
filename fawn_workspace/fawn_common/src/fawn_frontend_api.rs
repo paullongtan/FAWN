@@ -30,6 +30,10 @@ pub struct RequestJoinRingRequest {
 pub struct RequestJoinRingResponse {
     #[prost(message, repeated, tag = "1")]
     pub migrate_info: ::prost::alloc::vec::Vec<MigrateInfo>,
+    #[prost(message, optional, tag = "2")]
+    pub successor: ::core::option::Option<NodeInfo>,
+    #[prost(message, optional, tag = "3")]
+    pub predecessor: ::core::option::Option<NodeInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
