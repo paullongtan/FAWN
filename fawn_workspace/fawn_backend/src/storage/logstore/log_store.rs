@@ -423,7 +423,7 @@ where
 {
     let seg_id = seg.meta.id;
     for (_hash, offset) in seg.footer_pairs() {
-        if seg_id == start_ptr.seg_id && offset <= start_ptr.offset {
+        if seg_id == start_ptr.seg_id && offset < start_ptr.offset {
             continue;
         }
 
