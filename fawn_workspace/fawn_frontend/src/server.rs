@@ -15,7 +15,6 @@ pub struct FrontendSystemState {
     pub ready: AtomicBool,
     pub backend_manager: Arc<BackendManager>,
     pub fronts: Vec<NodeInfo>,
-    pub chain_members: Arc<RwLock<Vec<NodeInfo>>>,
     pub this: usize,
 }
 
@@ -38,7 +37,6 @@ impl FrontendSystemState {
             ready: AtomicBool::new(false),
             backend_manager: Arc::new(BackendManager::new(vec![], replication_count as usize)),
             fronts,
-            chain_members: Arc::new(RwLock::new(vec![])), // no backend at system start
             this,
         })
     }
@@ -110,8 +108,7 @@ impl FrontendServer {
             .parse()
             .map_err(|e: std::net::AddrParseError| FawnError::SystemError(e.to_string()))?;
 
-        let backend_manager = BackendManager::new(vec![], 3);
-        let handler = FrontendHandler::new(Arc::new(backend_manager), self.state.clone());
+        let handler = FrontendHandler::new(self.state.clone());
         let service = FawnFrontendServiceServer::new(FrontendService::new(handler, self.state.clone()));
 
         // Create shutdown signal

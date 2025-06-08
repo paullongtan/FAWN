@@ -17,13 +17,12 @@ use fawn_common::fawn_frontend_api::NotifyBackendJoinRequest;
 use tonic::Status;
 
 pub struct FrontendHandler {
-    backend_manager: Arc<BackendManager>,
     state: Arc<FrontendSystemState>,
 }
 
 impl FrontendHandler {
-    pub fn new(backend_manager: Arc<BackendManager>, state: Arc<FrontendSystemState>) -> Self {
-        Self { backend_manager, state }
+    pub fn new(state: Arc<FrontendSystemState>) -> Self {
+        Self { state }
     }
 
     pub async fn handle_request_join_ring(
@@ -31,7 +30,7 @@ impl FrontendHandler {
         new_node: NodeInfo,
     ) -> FawnResult<Vec<MigrateInfo>> {
         // get affected chains
-        let updated_chain_infos = self.backend_manager.get_updated_chain(new_node).await;
+        let updated_chain_infos = self.state.backend_manager.get_updated_chain(new_node).await;
 
         // caluculate data range to migrate for each chain
         // range: (predecessor, head node]
@@ -54,7 +53,7 @@ impl FrontendHandler {
         new_node: NodeInfo,
     ) -> Result<(), Status> {
         // for each of the chain that the new node is in, call update chain member on the head node
-        let updated_chain_infos = self.backend_manager.get_updated_chain(new_node.clone()).await;
+        let updated_chain_infos = self.state.backend_manager.get_updated_chain(new_node.clone()).await;
         for (chain, old_tail, _) in updated_chain_infos {
             let head_node = chain.first().unwrap();
             let addr = head_node.get_http_addr();
@@ -85,7 +84,7 @@ impl FrontendHandler {
         }
 
         // add the new node to the backend list
-        self.backend_manager.add_backend(new_node.clone()).await;
+        self.state.backend_manager.add_backend(new_node.clone()).await;
 
         // notify other frontends of the new node's node info to update their backend list
         for i in 0..self.state.fronts.len() {
@@ -109,7 +108,7 @@ impl FrontendHandler {
         user_key: String,
     ) -> Result<Vec<u8>, Status> {
         let key_id = fawn_common::util::get_key_id(&user_key);
-        let chain_members = self.backend_manager.get_chain_members(key_id).await;
+        let chain_members = self.state.backend_manager.get_chain_members(key_id).await;
         let tail_node = chain_members.last().unwrap();
         
         let addr = tail_node.get_http_addr();
@@ -132,7 +131,7 @@ impl FrontendHandler {
         value: Vec<u8>,
     ) -> Result<(), Status> {
         let key_id = fawn_common::util::get_key_id(&user_key);
-        let chain_members = self.backend_manager.get_chain_members(key_id).await;
+        let chain_members = self.state.backend_manager.get_chain_members(key_id).await;
         let head_node = chain_members.first().unwrap();
         
         let addr = head_node.get_http_addr();
@@ -156,14 +155,14 @@ impl FrontendHandler {
         &self,
         backend_info: NodeInfo,
     ) {
-        self.backend_manager.add_backend(backend_info).await;
+        self.state.backend_manager.add_backend(backend_info).await;
     }
     
     pub async fn handle_notify_backend_leave(
         &self,
         backend_info: NodeInfo,
     ) {
-        self.backend_manager.remove_backend(backend_info.id).await;
+        self.state.backend_manager.remove_backend(backend_info.id).await;
     }
 }
 
