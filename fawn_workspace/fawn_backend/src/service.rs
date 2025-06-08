@@ -12,6 +12,7 @@ use fawn_common::err::FawnError;
 use fawn_common::fawn_backend_api::ValueEntry;
 
 pub struct BackendService {
+    // TODO: remove Mutex
     handler: Arc<Mutex<BackendHandler>>,
 }
 
@@ -77,7 +78,7 @@ impl FawnBackendService for BackendService {
         // build slice from storage
         let entries = {
             let handler = self.handler.lock().await;
-            handler.build_migrate_slice((start_id, end_id))
+            handler.handle_migrate_data((start_id, end_id))
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?
         }; 
@@ -107,13 +108,14 @@ impl FawnBackendService for BackendService {
         let mut stream = request.into_inner();
         let handler = self.handler.lock().await;
 
+        // TODO: check whether it should filter out based on range (I think unfiltered is fine for now)
         // process each entry in the stream
         while let Some(entry) = stream.message().await? {
             let key_id = entry.key_id;
             let value = entry.value;
 
-            // store the value
-            handler.handle_store_value(key_id, value, 0).await
+            // store the value directly into true store
+            handler.store_into_primary(key_id, value)
                 .map_err(|e| Status::internal(e.to_string()))?;
         }
 

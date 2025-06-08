@@ -65,7 +65,14 @@ impl BackendServer {
         Ok(Self { fronts, state: Arc::new(state) })
     }
 
-    pub async fn start(&mut self, log_store: LogStructuredStore, meta: Meta, meta_path: PathBuf) -> FawnResult<()> {
+    pub async fn start(
+        &mut self, 
+        primary_storage: LogStructuredStore, 
+        primary_meta_path: PathBuf, 
+        temp_storage: LogStructuredStore,
+        temp_meta_path: PathBuf,
+        stage_meta_path: PathBuf, 
+    ) -> FawnResult<()> {
 
         // spawn a task to start the server
         // wait for the server to be ready
@@ -76,7 +83,15 @@ impl BackendServer {
         // start serving requests
 
         let node_info = self.state.self_info.clone();
-        let handler = BackendHandler::new(log_store, self.state.clone(), meta, meta_path)?;
+        // let handler = BackendHandler::new(log_store, self.state.clone(), meta, meta_path)?;
+        let handler = BackendHandler::new(
+            primary_storage,
+            primary_meta_path,
+            temp_storage,
+            temp_meta_path,
+            stage_meta_path,
+            self.state.clone()
+        )?;
         let service = FawnBackendServiceServer::new(BackendService::new(handler));
 
         // Create shutdown signal

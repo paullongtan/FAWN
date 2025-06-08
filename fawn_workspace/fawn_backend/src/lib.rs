@@ -3,3 +3,4 @@ pub mod service;
 pub mod server;
 pub mod rpc_handler;
 pub mod meta;
+pub mod stage;
