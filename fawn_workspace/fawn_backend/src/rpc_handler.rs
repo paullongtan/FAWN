@@ -104,7 +104,9 @@ impl BackendHandler {
         *pred_lock = predecessor.clone();
         Ok(true)
     }
-
+    /* 
+    - I just handle the update membership part
+    */
     pub async fn handle_migrate_data(&self, request_node: &NodeInfo) -> FawnResult<bool> {
         let prev_predecessor = self.state.prev_predecessor.read().await;
         let predecessor = self.state.predecessor.read().await;
@@ -132,6 +134,116 @@ impl BackendHandler {
                 return Err(Box::new(FawnError::SystemError("Failed to send data to predecessor".to_string())));
             }
         }
+        Ok(true)
+    }
+    
+    pub async fn handle_update_chain_member(
+        &mut self,
+        predecessor: Option<NodeInfo>,
+        new_node: NodeInfo,
+        successor: Option<NodeInfo>,
+        old_tail: Option<NodeInfo>,
+    ) -> FawnResult<bool> {
+        let self_id = self.state.self_info.id;
+
+        // Check if I am the predecessor of the new node
+        if let Some(pred) = &predecessor {
+            if pred.id == self_id {
+                let mut successor_lock = self.state.successor.write().await;
+                *successor_lock = new_node.clone();
+                println!("Updated successor to new node: {}", new_node.id);
+            }
+        }
+
+        // Check if I am the successor of the new node
+        if let Some(succ) = &successor {
+            if succ.id == self_id {
+                let mut predecessor_lock = self.state.predecessor.write().await;
+                *predecessor_lock = new_node.clone();
+                println!("Updated predecessor to new node: {}", new_node.id);
+            }
+        }
+
+        // Check if I am the new node
+        if new_node.id == self_id {
+            if let Some(pred) = &predecessor {
+                let mut predecessor_lock = self.state.predecessor.write().await;
+                *predecessor_lock = pred.clone();
+                println!("New node: Updated my predecessor");
+            }
+            if let Some(succ) = &successor {
+                let mut successor_lock = self.state.successor.write().await;
+                *successor_lock = succ.clone();
+                println!("New node: Updated my successor");
+            }
+        }
+
+        // 06/08
+        // Check if I am the old tail - flush data to new node -- need to flush and then send acks backwards back to the head?
+
+        // need to get the data from a certain range: from last sent --> last acked?
+        // during migrate data we now what range of values to send to the new node, but new data will be coming in, need to flush this data
+        // we will know this new range of values via a pointer
+        
+        /*
+        To Do: pull and merge changes --> get updated protobuf and backend handler info
+        - add switch state after data migration --> switch to temporary stage
+        - call flush data on dest=new_node which will know to flush from temp-->normal storage
+        trigger flush will be done from the frontend, but i still need to flush data from temporary to normal in this function
+
+        - i do not need to handle the trigger part
+
+        - update the successor and predecessors, actually may jsut need to update the successor, no more predecessor
+        - check for the stopping sign when pass, --> if you are teh last member of the chain, if you are , just stop
+
+
+        for join_ring:
+        - similar to what i ahve rn
+        - request join, --> list of migrate info
+        - migrate on all of the list of nodes provided
+        - send the finalize ring join
+
+        - sends ok
+
+        - merge from pauls branch
+        - then me and kevin will merge into some integration branch
+         */
+
+        if let Some(old_tail_node) = &old_tail {
+            if old_tail_node.id == self_id {
+                println!("I am the old tail, flushing data to new node: {}", new_node.id);
+                // FLUSH....
+                //C nnect to the new node and call flush
+                let mut client = FawnBackendServiceClient::connect(new_node.get_http_addr()).await
+                    .map_err(|e| FawnError::RpcError(format!("Failed to connect to new node for flush: {}", e)))?;
+        
+                // Call the flush service function
+                // client.flush(/* appropriate stream parameter */).await
+                //     .map_err(|e| FawnError::RpcError(format!("Failed to flush data to new node: {}", e)))?;
+        
+                println!("Successfully flushed data to new node: {}", new_node.id);                
+                // Don't continue propagation from old tail
+                return Ok(true);
+            }
+        }
+
+        // Forward the update chain member call to successor if needed
+        let current_successor = self.state.successor.read().await.clone();
+        if current_successor.id != self_id {
+            let mut client = FawnBackendServiceClient::connect(current_successor.get_http_addr()).await
+                .map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
+
+            let chain_info = fawn_common::fawn_backend_api::ChainMemberInfo {
+                predecessor: predecessor.as_ref().map(|p| p.clone().into()),
+                new_node: Some(new_node.into()),
+                successor: successor.as_ref().map(|s| s.clone().into()),
+                old_tail: old_tail.as_ref().map(|t| t.clone().into()),
+            };
+
+            client.update_chain_member(chain_info).await
+                .map_err(|e| FawnError::RpcError(format!("Failed to forward update chain member: {}", e)))?;
+        }
+
         Ok(true)
     }
 

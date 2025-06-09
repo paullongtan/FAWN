@@ -9,6 +9,7 @@ pub struct NodeInfo {
     #[prost(uint32, tag = "3")]
     pub id: u32,
 }
+/// tail of several chains
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrateInfo {

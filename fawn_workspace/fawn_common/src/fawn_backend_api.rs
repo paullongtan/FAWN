@@ -49,6 +49,7 @@ pub struct StoreRequest {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StoreResponse {}
+/// need to maintain a log of what data has been sent to send over to new node after finalization
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrateDataRequest {
@@ -62,6 +63,10 @@ pub struct MigrateDataRequest {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FlushDataResponse {}
+/// check if your predecessor is yourself, if so update your successor and call updatechainmember on successor
+/// check if you are successor of new node --> update your predecessor
+/// check if you are new node, you need to update both your predecessor and successor
+/// keep calling updatechain member down the chain, until you hit the old tail in which you flush to new node and send acks backwards
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChainMemberInfo {

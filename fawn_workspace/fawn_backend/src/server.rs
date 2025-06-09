@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use crate::service::BackendService;
 use crate::rpc_handler::BackendHandler;
+use anyhow::Ok;
 use fawn_common::types::NodeInfo;
 use fawn_common::util::get_node_id;
 use fawn_common::fawn_backend_api::fawn_backend_service_server::FawnBackendServiceServer;
@@ -140,7 +141,7 @@ impl BackendServer {
         Ok(())
     }
 
-    async fn join_ring(&self) -> FawnResult<(bool)> {
+    async fn join_ring(&self) -> FawnResult<()> {
         println!("Joining ring");
         let node_info = self.state.self_info.clone();
         let front_index = node_info.id % self.fronts.len() as u32;
@@ -151,63 +152,60 @@ impl BackendServer {
         };
         let response = front_client.request_join_ring(request).await.map_err(|e| FawnError::RpcError(format!("Failed to join ring: {}", e)))?;
         let response = response.into_inner();
-        let successor_info = response.successor_info;
-        let predecessor_info = response.predecessor_info;
 
-        match predecessor_info {
-            Some(predecessor_info) => {
-
-                if predecessor_info.id != node_info.id {
-                    // update the predecessor in the state
-                    let predecessor_info = NodeInfo::from(predecessor_info);
-                    *self.state.predecessor.write().await = predecessor_info.clone();
-                }
+        for migrate_info in response.migrate_info {
+            let src_info = NodeInfo::from(migrate_info.src_info.unwrap());
+            let start_id = migrate_info.start_id;
+            let end_id = migrate_info.end_id;
+            
+            println!("Requesting data migration from {} for range [{}, {}]", 
+                     src_info.get_http_addr(), start_id, end_id);
+            
+            // Connect to the source node and request migration
+            let mut src_client = FawnBackendServiceClient::connect(src_info.get_http_addr())
+                .await.map_err(|e| FawnError::RpcError(format!("Failed to connect to source {}: {}", src_info.get_http_addr(), e)))?;
+            
+            let migrate_request = MigrateDataRequest {
+                dest_info: Some(node_info.clone().into()),
+                start_id,
+                end_id,
+            };
+            
+            // Receive the streamed data --> put into normal storage
+            let mut response_stream = src_client.migrate_data(migrate_request).await
+                .map_err(|e| FawnError::RpcError(format!("Failed to start data migration from {}: {}", src_info.get_http_addr(), e)))?
+                .into_inner();
+            
+            // Process each value from the stream
+            while let Some(value_entry) = response_stream.message().await
+                .map_err(|e| FawnError::RpcError(format!("Failed to receive migration data: {}", e)))? {
                 
+                println!("Received migrated data: key_id={}", value_entry.key_id);
+
             }
-            None => {}
+            
+            println!("Completed data migration from {}", src_info.get_http_addr());
         }
+        
 
-        // request data migration from the successor
-        match successor_info {
-            Some(successor_info) => {
-                if successor_info.id != node_info.id {
-                    // update the successor in the state
-                    let successor_info = NodeInfo::from(successor_info);
-                    *self.state.successor.write().await = successor_info.clone();
 
-                    // request data migration from the successor
-                    println!("Requesting data migration from successor: {:?}", successor_info.get_http_addr());
-                    let mut successor_client = FawnBackendServiceClient::connect(successor_info.get_http_addr()).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
-                    let request = MigrateDataRequest {
-                        new_predecessor_info: Some(node_info.clone().into()),
-                    };
-                    let response = successor_client.migrate_data(request).await.map_err(|e| FawnError::RpcError(format!("Failed to migrate data from successor: {}", e)))?;
-                    let response = response.into_inner();
-                    let migrate_success = response.success;
-                    if !migrate_success {
-                        println!("Data migration failed");
-                        return Err(Box::new(FawnError::SystemError("Data migration failed".to_string())));
-                    }
-                }
-            }
-            None => {}
-        }
-
-        // finalize the join ring
         println!("Finalizing join ring");
         let request = FinalizeJoinRingRequest {
             node_info: Some(node_info.clone().into()),
-            migrate_success: true,
         };
-        let response = front_client.finalize_join_ring(request).await.map_err(|e| FawnError::RpcError(format!("Failed to finalize join ring: {}", e)))?;
-        let response = response.into_inner();
-        let join_ring_success = response.join_ring_success;
-        if !join_ring_success {
-            println!("Finalize join ring failed");
-            return Err(Box::new(FawnError::SystemError("Finalize join ring failed".to_string())));
-        }
+        // Frontend finalize_join_ring will be responsible for calling update_chain_membership, need to do the followinwing:
 
-        Ok(join_ring_success)
+        // when update chain membeship reaches the old tail, it will flush data to new node
+        // after frontend gets the ack from the head of the chain of new node, the join will be a success
+        // we need to maintain some temp storage (data coming in when new node is in middle of joining) and normal storage (migration data)
+        // when flush is done, we can then put all the temp storage stuff into normal storage 
+        let response = front_client.finalize_join_ring(request).await
+            .map_err(|e| FawnError::RpcError(format!("Failed to finalize join ring: {}", e)))?;
+        let response = response.into_inner();
+        
+        println!("Successfully joined the ring");
+
+        Ok(())
     }
-    
+
 }

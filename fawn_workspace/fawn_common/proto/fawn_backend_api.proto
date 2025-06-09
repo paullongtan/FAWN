@@ -55,7 +55,7 @@ message StoreRequest {
 
 message StoreResponse {
 }
-
+// need to maintain a log of what data has been sent to send over to new node after finalization
 message MigrateDataRequest {
     NodeInfo dest_info = 1;
     uint32 start_id = 2;
@@ -64,7 +64,10 @@ message MigrateDataRequest {
 
 message FlushDataResponse {
 }
-
+// check if your predecessor is yourself, if so update your successor and call updatechainmember on successor
+// check if you are successor of new node --> update your predecessor
+// check if you are new node, you need to update both your predecessor and successor
+// keep calling updatechain member down the chain, until you hit the old tail in which you flush to new node and send acks backwards
 message ChainMemberInfo {
     NodeInfo predecessor = 1; // the predecessor of the new node should update its successor to the new node
     NodeInfo new_node = 2; // the new node

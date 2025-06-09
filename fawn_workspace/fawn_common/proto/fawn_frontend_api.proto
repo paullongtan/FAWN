@@ -20,6 +20,7 @@ message NodeInfo {
     uint32 id = 3;
 }
 
+// tail of several chains
 message MigrateInfo {
     NodeInfo src_info = 1;
     uint32 start_id = 2;

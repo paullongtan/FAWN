@@ -5,9 +5,7 @@ use tonic::{Response, Status};
 use crate::rpc_handler::BackendHandler;
 use fawn_common::fawn_backend_api::fawn_backend_service_server::FawnBackendService;
 use fawn_common::fawn_backend_api::{
-    GetRequest, GetResponse, 
-    MigrateDataRequest, PingRequest, 
-    PingResponse, StoreRequest, StoreResponse,
+    ChainMemberInfo, GetRequest, GetResponse, MigrateDataRequest, PingRequest, PingResponse, StoreRequest, StoreResponse, UpdateChainMemberResponse
 };
 use fawn_common::err::FawnError;
 
@@ -58,7 +56,9 @@ impl FawnBackendService for BackendService {
                             .map_err(|e| Status::internal(e.to_string()))?  ;
         Ok(Response::new(StoreResponse {}))
     }
-
+    // handle the index of up to what point has data been sent to new node
+    // refactor the response type 
+    
     async fn migrate_data(
         &self,
         request: tonic::Request<MigrateDataRequest>,
@@ -88,6 +88,36 @@ impl FawnBackendService for BackendService {
                         _ => {
                             Err(Status::internal(e.to_string()))
                         }
+                    }
+                } else {
+                    Err(Status::internal(e.to_string()))
+                }
+            }
+        }
+    }
+    async fn update_chain_member(
+        &self,
+        request: tonic::Request<ChainMemberInfo>,
+    ) -> std::result::Result<tonic::Response<UpdateChainMemberResponse>, tonic::Status> {
+        let chain_info = request.into_inner();
+        
+        let predecessor = chain_info.predecessor.map(|p| fawn_common::types::NodeInfo::from(p));
+        let new_node = chain_info.new_node.ok_or_else(|| Status::invalid_argument("new_node is required"))?;
+        let new_node = fawn_common::types::NodeInfo::from(new_node);
+        let successor = chain_info.successor.map(|s| fawn_common::types::NodeInfo::from(s));
+        let old_tail = chain_info.old_tail.map(|t| fawn_common::types::NodeInfo::from(t));
+
+        let mut handler = self.handler.lock().await;
+        let result = handler.handle_update_chain_member(predecessor, new_node, successor, old_tail).await;
+        
+        match result {
+            Ok(_) => Ok(Response::new(UpdateChainMemberResponse {})),
+            Err(e) => {
+                if let Some(fawn_err) = e.downcast_ref::<FawnError>() {
+                    match fawn_err {
+                        FawnError::InvalidRequest(msg) => Err(Status::invalid_argument(msg)),
+                        FawnError::SystemError(msg) => Err(Status::internal(msg)),
+                        _ => Err(Status::internal(e.to_string())),
                     }
                 } else {
                     Err(Status::internal(e.to_string()))

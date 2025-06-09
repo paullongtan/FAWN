@@ -106,12 +106,12 @@ pub async fn handle_put_value(
     value: Vec<u8>,
 ) -> Result<(), Status> {
     let key_id = fawn_common::util::get_key_id(&user_key);
-    let chain_members = backend_manager.get_chain_members(key_id).await;
-    let head_node = chain_members.first().unwrap();
+    let successor = backend_manager.find_successor(key_id).await
+        .ok_or_else(|| Box::new(FawnError::NoBackendAvailable("no backend available".to_string())))?;
     
-    let addr = head_node.get_http_addr();
-    let mut client = FawnBackendServiceClient::connect(addr).await
-        .map_err(|e| Status::unavailable(format!("Failed to connect to successor: {}", e)))?;
+    // Create a gRPC client to the successor backend
+    let addr = successor.get_http_addr();
+    let mut client = FawnBackendServiceClient::connect(addr).await.map_err(|e| FawnError::RpcError(format!("Failed to connect to successor: {}", e)))?;
     
     // Calculate the number of passes needed down the chain
     let ring_size = backend_manager.num_active_backends().await;
