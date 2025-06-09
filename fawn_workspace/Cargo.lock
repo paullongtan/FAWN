@@ -401,6 +401,7 @@ dependencies = [
  "byteorder",
  "crc32fast",
  "fawn_common",
+ "futures-core",
  "futures-util",
  "memmap2",
  "serde",

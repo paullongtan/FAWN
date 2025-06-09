@@ -18,4 +18,4 @@ async-trait = "0.1.88"
 tokio = { version = "1.45.1", features = ["full"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
-futures_core = "0.3"
+futures-core = "0.3"
