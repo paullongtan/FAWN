@@ -83,21 +83,12 @@ impl FawnBackendService for BackendService {
                 .map_err(|e| Status::internal(e.to_string()))?
         }; 
 
-        // create a streaming response
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        tokio::spawn(async move {
-            for entry in entries {
-                if tx.send(Ok(entry)).await.is_err() {
-                    eprintln!("Failed to send entry during migration");
-                    break; // stop if the receiver is gone
-                }
-            }
-        });
+        let stream = tokio_stream::iter(entries.into_iter().map(Ok));
 
-        let recv_stream = ReceiverStream::new(rx);
-        Ok(Response::new(recv_stream))
+        Ok(Response::new(stream))
     }
 
+    // should be moved into 
     async fn flush_data(
         &self, 
         request: tonic::Request<tonic::Streaming<ValueEntry>>,
@@ -108,16 +99,8 @@ impl FawnBackendService for BackendService {
         let mut stream = request.into_inner();
         let handler = self.handler.lock().await;
 
-        // TODO: check whether it should filter out based on range (I think unfiltered is fine for now)
-        // process each entry in the stream
-        while let Some(entry) = stream.message().await? {
-            let key_id = entry.key_id;
-            let value = entry.value;
-
-            // store the value directly into true store
-            handler.store_into_primary(key_id, value)
-                .map_err(|e| Status::internal(e.to_string()))?;
-        }
+        handler.handle_flush_data(stream).await
+            .map_err(|e| Status::internal(e.to_string()))?;
 
         Ok(Response::new(FlushDataResponse {}))
     }

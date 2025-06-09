@@ -2,6 +2,7 @@ use fawn_common::fawn_backend_api::{fawn_backend_service_client::FawnBackendServ
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use futures_util::StreamExt; // for .next()
 
 use fawn_common::types::NodeInfo;
 use fawn_common::err::{FawnError, FawnResult};
@@ -27,6 +28,7 @@ pub enum StorageRole {
 
 #[derive(Clone)]
 pub struct BackendHandler {
+    // TODO: stage & switch_stage should be handled by `BackendSystemState`
     stage: Arc<tokio::sync::RwLock<Stage>>,
     stage_meta_path: PathBuf, 
 
@@ -118,7 +120,12 @@ impl BackendHandler {
                 ctx.persist_meta()?;
                 Ok(true) // delivered & ACKed
             }, 
-            false => Err(Box::new(FawnError::RpcError("transport failure".into()))), // let the caller replay the operation
+            false => {
+                Err(Box::new(FawnError::RpcError("transport failure".into())))
+                // // TODO: replay instead of returning error
+                // self.replay_unacked_ops().await?; // retry unacked ops
+                // // set a time out for retrying
+            }
         }
     }
 
@@ -161,10 +168,11 @@ impl BackendHandler {
     pub async fn handle_migrate_data(&self, range: (u32, u32)) -> FawnResult<Vec<ValueEntry>> {
         let ctx = self.get_context_by_role(StorageRole::Primary);
         let start_ptr = ctx.last_sent_ptr.lock().unwrap().clone();
+        let end_ptr = ctx.last_acked_ptr.lock().unwrap().clone();
 
         // Vec<(ptr, flag, key, val)>
         let records = ctx.storage
-            .scan_after_ptr_in_range(start_ptr, Some(range))
+            .scan_between_ptr_in_range(start_ptr, end_ptr, Some(range))
             .map_err(|e| FawnError::SystemError(format!("Failed to scan for migration: {}", e)))?;
 
         // convert to proto entries
@@ -180,6 +188,8 @@ impl BackendHandler {
         }).collect();
 
         // advance the last_sent_ptr to the last record pointer
+        // POTENTIAL ISSUE: if the requester crashes before appending all records,
+        // that node will miss some records since last_sent_ptr is advanced.
         if let Some((ptr_after_last_retrieved_record, ..)) = records.last() {
             self.advance_ptr_to_dest(&ctx.last_sent_ptr, *ptr_after_last_retrieved_record)?;
             ctx.persist_meta()?;
@@ -188,13 +198,28 @@ impl BackendHandler {
         Ok(entries)
     }
 
+    pub async fn handle_flush_data<S>(&self, mut stream: S) -> FawnResult<()>
+    where
+        S: futures_core::Stream<Item = Result<ValueEntry, tonic::Status>> + Unpin,
+    {
+        while let Some(entry) = stream.next().await {
+            let entry = entry.map_err(|e| FawnError::SystemError(format!("Stream error: {}", e)))?;
+            let key_id = entry.key_id;
+            let value = entry.value;
+            self.store_into_primary(key_id, value)?;
+        }
+        Ok(())
+    }
+
     /// send every records between last_sent_ptr and last_acked_ptr to the destination node.
     /// dest should decide whether to filter out records based on its own range.
     /// we will only flush data from true store.
-    pub async fn send_flush(&self, dest: &NodeInfo) -> FawnResult<()> {
+    pub async fn handle_trigger_flush(&self, dest: &NodeInfo) -> FawnResult<()> {
         let ctx = self.get_context_by_role(StorageRole::Primary);
         let start_ptr = ctx.last_sent_ptr.lock().unwrap().clone();
         let end_ptr = ctx.last_acked_ptr.lock().unwrap().clone();
+
+        // Vec<(ptr, flag, key, val)>
         let records = ctx.storage
             .scan_between_ptr_in_range(start_ptr, end_ptr, None)
             .map_err(|e| FawnError::SystemError(format!("Failed to scan for flush: {}", e)))?;
@@ -203,47 +228,26 @@ impl BackendHandler {
             return Ok(()); // nothing to flush
         }
 
+        let ptr_after_last_flushed_record = records.last().map(|(ptr, ..)| *ptr);
+
+        let stream = tokio_stream::iter(records.into_iter().filter_map(move |(_ptr, flag, k, v)| {
+            if flag != RecordFlags::Put {
+                return None;
+            }
+            Some(ValueEntry { key_id: k, value: v.clone() })
+        }));
+
         let mut client = FawnBackendServiceClient::connect(dest.get_http_addr()).await
             .map_err(|e| FawnError::RpcError(format!("Failed to connect to destination: {}", e)))?;
 
-        // convert Vec -> stream that advances last_sent_ptr after each record send
-        let last_sent_ptr = Arc::clone(&ctx.last_sent_ptr);
-        let mut last_ptr_sent = None;
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        // TODO: streaming logic
-        tokio::spawn(async move {
-            for (ptr, flag, k, v) in records {
-                if flag != RecordFlags::Put {
-                    continue; // only flush Put records
-                }
-                let entry = ValueEntry {
-                    key_id: k,
-                    value: v.clone(),
-                };
-                if tx.send(entry).await.is_err() {
-                    eprintln!("Failed to send entry during flush");
-                    break; // stop if the receiver is gone
-                }
-
-                // advance last_sent_ptr to the current record ptr
-                let mut guard = last_sent_ptr.lock().unwrap();
-                if *guard < ptr {
-                    *guard = ptr;
-                    last_ptr_sent = Some(ptr);
-                }
-            }
-        });
-
-        // wait for flush_data to complete
-        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         client.flush_data(stream).await
             .map_err(|e| FawnError::RpcError(format!("Failed to flush data to destination: {}", e)))?;
 
-        // persist the last_sent_ptr if it was advanced
-        if let Some(ptr) = last_ptr_sent {
+        // Advance the last_sent_ptr to the last flushed record pointer
+        if let Some(ptr) = ptr_after_last_flushed_record {
             self.advance_ptr_to_dest(&ctx.last_sent_ptr, ptr)?;
-            ctx.persist_meta()?;
-        }
+            ctx.persist_meta()?; // persist after flush
+        } 
 
         Ok(())
     }
@@ -328,6 +332,40 @@ impl BackendHandler {
         new_stage
             .store(&self.stage_meta_path)
             .map_err(|e| FawnError::SystemError(format!("Failed to persist stage: {}", e)))?;
+        Ok(())
+    }
+
+    /// Flush every records between last_sent_ptr and last_acked_ptr in the temporary storage into primary storage.
+    pub async fn handle_trigger_merge(&self) -> FawnResult<()> {
+        // retrieve recrods from temporary
+        let ctx_temp = self.get_context_by_role(StorageRole::Temporary);
+        let records = ctx_temp.storage
+            .scan_between_ptr_in_range(ctx_temp.last_sent_ptr.lock().unwrap().clone(), ctx_temp.last_acked_ptr.lock().unwrap().clone(), None)
+            .map_err(|e| FawnError::SystemError(format!("Failed to scan for flush from temp: {}", e)))?;
+            
+        if records.is_empty() {
+            return Ok(()); // nothing to flush
+        }
+
+        let ptr_after_last_flushed_record = records.last().map(|(ptr, ..)| *ptr);
+
+        // store each record into primary
+        for (_ptr, flag, key_id, value) in records {
+            if flag != RecordFlags::Put {
+                continue; // only flush Put records
+            }
+
+            // store into primary
+            self.store_into_primary(key_id, value)?;
+        }
+
+        // advance the last_sent_ptr after all records are flushed
+        // POTENTIAL ISSUE: have to flush again if the node crashes during this process
+        if let Some(ptr) = ptr_after_last_flushed_record {
+            self.advance_ptr_to_dest(&ctx_temp.last_sent_ptr, ptr)?;
+            ctx_temp.persist_meta()?; // persist after flush
+        }
+
         Ok(())
     }
 }
