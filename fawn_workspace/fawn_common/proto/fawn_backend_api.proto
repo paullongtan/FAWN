@@ -21,6 +21,7 @@ service FawnBackendService {
     // after pre-copy stage, updating the chain member
     rpc UpdateChainMember(ChainMemberInfo) returns (UpdateChainMemberResponse);
     rpc TriggerFlush(TriggerFlushRequest) returns (TriggerFlushResponse);
+    rpc TriggerMerge(TriggerMergeRequest) returns (TriggerMergeResponse);
 }
 
 message NodeInfo {
@@ -78,4 +79,10 @@ message TriggerFlushRequest {
 }
 
 message TriggerFlushResponse {
+}
+
+message TriggerMergeRequest {
+}
+
+message TriggerMergeResponse {
 }

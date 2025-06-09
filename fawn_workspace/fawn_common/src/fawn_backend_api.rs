@@ -80,6 +80,12 @@ pub struct TriggerFlushRequest {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TriggerFlushResponse {}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TriggerMergeRequest {}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TriggerMergeResponse {}
 /// Generated client implementations.
 pub mod fawn_backend_service_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
@@ -360,6 +366,36 @@ pub mod fawn_backend_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn trigger_merge(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TriggerMergeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TriggerMergeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/fawn_backend_api.FawnBackendService/TriggerMerge",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "fawn_backend_api.FawnBackendService",
+                        "TriggerMerge",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -424,6 +460,13 @@ pub mod fawn_backend_service_server {
             request: tonic::Request<super::TriggerFlushRequest>,
         ) -> std::result::Result<
             tonic::Response<super::TriggerFlushResponse>,
+            tonic::Status,
+        >;
+        async fn trigger_merge(
+            &self,
+            request: tonic::Request<super::TriggerMergeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TriggerMergeResponse>,
             tonic::Status,
         >;
     }
@@ -819,6 +862,53 @@ pub mod fawn_backend_service_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = TriggerFlushSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/fawn_backend_api.FawnBackendService/TriggerMerge" => {
+                    #[allow(non_camel_case_types)]
+                    struct TriggerMergeSvc<T: FawnBackendService>(pub Arc<T>);
+                    impl<
+                        T: FawnBackendService,
+                    > tonic::server::UnaryService<super::TriggerMergeRequest>
+                    for TriggerMergeSvc<T> {
+                        type Response = super::TriggerMergeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::TriggerMergeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as FawnBackendService>::trigger_merge(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = TriggerMergeSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

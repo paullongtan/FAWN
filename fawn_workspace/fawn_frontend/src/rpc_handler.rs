@@ -11,6 +11,7 @@ use fawn_common::fawn_frontend_api::fawn_frontend_service_client::FawnFrontendSe
 use fawn_common::fawn_backend_api::{
     ChainMemberInfo,
     TriggerFlushRequest,
+    TriggerMergeRequest,
 };
 use tonic::Request;
 use fawn_common::fawn_frontend_api::NotifyBackendJoinRequest;
@@ -74,6 +75,7 @@ impl FrontendHandler {
             let mut old_tail_client = FawnBackendServiceClient::connect(old_tail_addr)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to backend: {}", e)))?;
+            
             let flush_request = Request::new(TriggerFlushRequest {
                 new_node: Some(new_node.clone().into()),
             });
@@ -82,6 +84,16 @@ impl FrontendHandler {
                 .await
                 .map_err(|e| Status::internal(format!("Failed to trigger flush: {}", e)))?;
         }
+        // call trigger merge on the new node
+        let new_node_addr = new_node.get_http_addr();
+        let mut new_node_client = FawnBackendServiceClient::connect(new_node_addr)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to connect to backend: {}", e)))?;
+        let merge_request = Request::new(TriggerMergeRequest {});
+        new_node_client
+            .trigger_merge(merge_request)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to trigger merge: {}", e)))?;
 
         // add the new node to the backend list
         self.state.backend_manager.add_backend(new_node.clone()).await;
