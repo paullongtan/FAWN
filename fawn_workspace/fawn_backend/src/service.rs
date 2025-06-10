@@ -31,10 +31,8 @@ impl FawnBackendService for BackendService {
         &self,
         request: tonic::Request<PingRequest>,
     ) -> std::result::Result<tonic::Response<PingResponse>, tonic::Status>{
-        let self_info = self.handler.handle_ping().map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(PingResponse {
-            node_info: Some(self_info.into()),
-        }))
+        let _self_info = self.handler.handle_ping().map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(PingResponse {}))
     }
 
     async fn get_value(
