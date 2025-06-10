@@ -6,7 +6,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::rpc_handler::BackendHandler;
 use fawn_common::fawn_backend_api::fawn_backend_service_server::FawnBackendService;
 use fawn_common::fawn_backend_api::{
-    FlushDataResponse, GetRequest, GetResponse, MigrateDataRequest, PingRequest, PingResponse, StoreRequest, StoreResponse, TriggerMergeRequest, TriggerMergeResponse
+    FlushDataResponse, GetRequest, GetResponse, 
+    MigrateDataRequest, PingRequest, PingResponse, 
+    StoreRequest, StoreResponse, 
+    TriggerMergeRequest, TriggerMergeResponse, 
+    TriggerFlushRequest, TriggerFlushResponse, 
 };
 use fawn_common::err::FawnError;
 use fawn_common::fawn_backend_api::ValueEntry;
@@ -123,5 +127,23 @@ impl FawnBackendService for BackendService {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         Ok(Response::new(TriggerMergeResponse {}))
+    }
+
+    async fn trigger_flush(
+        &self, 
+        request: tonic::Request<TriggerFlushRequest>, 
+    ) -> std::result::Result<
+        tonic::Response<TriggerFlushResponse>, 
+        tonic::Status,
+    >{
+        let msg = request.into_inner();
+        let new_node_info = msg.new_node
+            .map(fawn_common::types::NodeInfo::from)
+            .ok_or_else(|| Status::invalid_argument("new_node is required"))?;
+
+        self.handler.handle_trigger_flush(&new_node_info).await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(TriggerFlushResponse {}))
     }
 }

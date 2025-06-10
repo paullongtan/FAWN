@@ -211,9 +211,8 @@ impl BackendHandler {
         Ok(())
     }
 
-    /// send every records between last_sent_ptr and last_acked_ptr to the destination node.
+    /// send every records between last_sent_ptr and last_acked_ptr in primary storage to the destination node.
     /// dest should decide whether to filter out records based on its own range.
-    /// we will only flush data from true store.
     pub async fn handle_trigger_flush(&self, dest: &NodeInfo) -> FawnResult<()> {
         let ctx = self.get_context_by_role(StorageRole::Primary);
         let start_ptr = ctx.last_sent_ptr.lock().unwrap().clone();
