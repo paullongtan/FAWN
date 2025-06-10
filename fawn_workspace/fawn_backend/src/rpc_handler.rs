@@ -316,9 +316,8 @@ impl BackendHandler {
         Ok(())
     }
 
-    /// send every records between last_sent_ptr and last_acked_ptr to the destination node.
+    /// send every records between last_sent_ptr and last_acked_ptr in primary storage to the destination node.
     /// dest should decide whether to filter out records based on its own range.
-    /// we will only flush data from true store.
     pub async fn handle_trigger_flush(&self, dest: &NodeInfo) -> FawnResult<()> {
         let ctx = self.get_context_by_role(StorageRole::Primary);
         let start_ptr = ctx.last_sent_ptr.lock().unwrap().clone();
@@ -353,6 +352,40 @@ impl BackendHandler {
             self.advance_ptr_to_dest(&ctx.last_sent_ptr, ptr)?;
             ctx.persist_meta()?; // persist after flush
         } 
+
+        Ok(())
+    }
+
+    /// Flush every records between last_sent_ptr and last_acked_ptr in the temporary storage into primary storage.
+    pub async fn handle_trigger_merge(&self) -> FawnResult<()> {
+        // retrieve recrods from temporary
+        let ctx_temp = self.get_context_by_role(StorageRole::Temporary);
+        let records = ctx_temp.storage
+            .scan_between_ptr_in_range(ctx_temp.last_sent_ptr.lock().unwrap().clone(), ctx_temp.last_acked_ptr.lock().unwrap().clone(), None)
+            .map_err(|e| FawnError::SystemError(format!("Failed to scan for flush from temp: {}", e)))?;
+            
+        if records.is_empty() {
+            return Ok(()); // nothing to flush
+        }
+
+        let ptr_after_last_flushed_record = records.last().map(|(ptr, ..)| *ptr);
+
+        // store each record into primary
+        for (_ptr, flag, key_id, value) in records {
+            if flag != RecordFlags::Put {
+                continue; // only flush Put records
+            }
+
+            // store into primary
+            self.store_into_primary(key_id, value)?;
+        }
+
+        // advance the last_sent_ptr after all records are flushed
+        // POTENTIAL ISSUE: have to flush again if the node crashes during this process
+        if let Some(ptr) = ptr_after_last_flushed_record {
+            self.advance_ptr_to_dest(&ctx_temp.last_sent_ptr, ptr)?;
+            ctx_temp.persist_meta()?; // persist after flush
+        }
 
         Ok(())
     }
@@ -437,40 +470,6 @@ impl BackendHandler {
         new_stage
             .store(&self.stage_meta_path)
             .map_err(|e| FawnError::SystemError(format!("Failed to persist stage: {}", e)))?;
-        Ok(())
-    }
-
-    /// Flush every records between last_sent_ptr and last_acked_ptr in the temporary storage into primary storage.
-    pub async fn handle_trigger_merge(&self) -> FawnResult<()> {
-        // retrieve recrods from temporary
-        let ctx_temp = self.get_context_by_role(StorageRole::Temporary);
-        let records = ctx_temp.storage
-            .scan_between_ptr_in_range(ctx_temp.last_sent_ptr.lock().unwrap().clone(), ctx_temp.last_acked_ptr.lock().unwrap().clone(), None)
-            .map_err(|e| FawnError::SystemError(format!("Failed to scan for flush from temp: {}", e)))?;
-            
-        if records.is_empty() {
-            return Ok(()); // nothing to flush
-        }
-
-        let ptr_after_last_flushed_record = records.last().map(|(ptr, ..)| *ptr);
-
-        // store each record into primary
-        for (_ptr, flag, key_id, value) in records {
-            if flag != RecordFlags::Put {
-                continue; // only flush Put records
-            }
-
-            // store into primary
-            self.store_into_primary(key_id, value)?;
-        }
-
-        // advance the last_sent_ptr after all records are flushed
-        // POTENTIAL ISSUE: have to flush again if the node crashes during this process
-        if let Some(ptr) = ptr_after_last_flushed_record {
-            self.advance_ptr_to_dest(&ctx_temp.last_sent_ptr, ptr)?;
-            ctx_temp.persist_meta()?; // persist after flush
-        }
-
         Ok(())
     }
 }
