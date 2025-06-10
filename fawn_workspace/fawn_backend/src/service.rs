@@ -11,6 +11,7 @@ use fawn_common::fawn_backend_api::{
     StoreRequest, StoreResponse, 
     TriggerMergeRequest, TriggerMergeResponse, 
     TriggerFlushRequest, TriggerFlushResponse, 
+    ChainMemberInfo, UpdateChainMemberResponse,
 };
 use fawn_common::err::FawnError;
 use fawn_common::fawn_backend_api::ValueEntry;
@@ -95,6 +96,25 @@ impl FawnBackendService for BackendService {
         );
 
         Ok(Response::new(stream))
+    }
+
+    async fn update_chain_member(
+        &self,
+        request: tonic::Request<ChainMemberInfo>,
+    ) -> std::result::Result<tonic::Response<UpdateChainMemberResponse>, tonic::Status> {
+        let msg = request.into_inner();
+        
+        // Convert protobuf NodeInfo to internal NodeInfo
+        let chain_members: Vec<fawn_common::types::NodeInfo> = msg.chain_members
+            .into_iter()
+            .map(|node| node.into())
+            .collect();
+        
+        let mut handler = self.handler.as_ref().clone(); // Get a mutable reference
+        handler.handle_update_chain_member(chain_members).await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        
+        Ok(Response::new(UpdateChainMemberResponse {}))
     }
 
     // should be moved into 

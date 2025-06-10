@@ -92,6 +92,7 @@ impl BackendServer {
             stage_meta_path,
             self.state.clone()
         )?;
+        let handler_for_join = handler.clone();
         let service = FawnBackendServiceServer::new(BackendService::new(handler));
 
         // Create shutdown signal
@@ -145,7 +146,7 @@ impl BackendServer {
         println!("Server is bound and ready");
 
         // join the ring
-        self.join_ring().await?;
+        self.join_ring(&handler_for_join).await?;
 
         println!("Backend is ready to serve requests");
 
@@ -155,7 +156,7 @@ impl BackendServer {
         Ok(())
     }
 
-    async fn join_ring(&self) -> FawnResult<()> {
+    async fn join_ring(&self, handler: &BackendHandler) -> FawnResult<(bool)> {
         println!("Joining ring");
         let node_info = self.state.self_info.clone();
         let front_index = node_info.id % self.fronts.len() as u32;
@@ -201,25 +202,24 @@ impl BackendServer {
             println!("Completed data migration from {}", src_info.get_http_addr());
         }
         
-
+        // change the stage from temp to normal
+        println!("Switching stage from TempMember to Normal");
+        handler.switch_stage(crate::stage::Stage::Normal).await
+            .map_err(|e| FawnError::SystemError(format!("Failed to switch stage to Normal: {}", e)))?;
 
         println!("Finalizing join ring");
         let request = FinalizeJoinRingRequest {
             node_info: Some(node_info.clone().into()),
         };
-        // Frontend finalize_join_ring will be responsible for calling update_chain_membership, need to do the followinwing:
 
-        // when update chain membeship reaches the old tail, it will flush data to new node
-        // after frontend gets the ack from the head of the chain of new node, the join will be a success
-        // we need to maintain some temp storage (data coming in when new node is in middle of joining) and normal storage (migration data)
-        // when flush is done, we can then put all the temp storage stuff into normal storage 
+        // finalize_join_ring: will handle the update_chain_membership and flush
         let response = front_client.finalize_join_ring(request).await
             .map_err(|e| FawnError::RpcError(format!("Failed to finalize join ring: {}", e)))?;
         let response = response.into_inner();
         
         println!("Successfully joined the ring");
 
-        Ok(())
+        Ok(true)
     }
     
 }
