@@ -273,19 +273,22 @@ impl LogStructuredStore {
             } else if lo > hi {
                 h > lo || h <= hi
             } else {
-                false // lo == hi, no valid range
+                true // if lo == hi, include all (includes everything)
             }
         };
 
         // scan the active segment first
         for (h, off) in active_seg.footer_pairs() {
             if !in_range(h) { continue; }
-            if seen.contains(&h) { continue; } // skip if already seen
+            if seen.contains(&h) { continue; } // skip if already seen (currently, we consider no hash collision)
+
             let buf = active_seg.read_record_bytes(off)?;
             let rec = super::record::Record::decode(&mut &buf[..])?;
             if rec.flags == super::record::RecordFlags::Put {
-                seen.insert(rec.hash32);
+                seen.insert(rec.hash32); // mark as seen
                 items.push((rec.hash32, rec.value.to_vec()));
+            } else if rec.flags == super::record::RecordFlags::Delete {
+                seen.insert(rec.hash32); // mark as seen to avoid including old PUT record
             }
         }
 
@@ -293,11 +296,14 @@ impl LogStructuredStore {
         for seg in self.sealed.read().unwrap().iter() {
             for (h, off) in seg.footer_pairs() {
                 if !in_range(h) { continue; }
-                if seen.contains(&h) { continue; } // skip if already seen
+                if seen.contains(&h) { continue; } // skip if already seen (currently, we consider no hash collision)
+
                 let buf = seg.read_record_bytes(off)?;
                 let rec = super::record::Record::decode(&mut &buf[..])?;
                 if rec.flags == super::record::RecordFlags::Put {
                     items.push((rec.hash32, rec.value.to_vec()));
+                } else if rec.flags == super::record::RecordFlags::Delete {
+                    seen.insert(rec.hash32); // mark as seen to avoid including old PUT record
                 }
             }
         }
