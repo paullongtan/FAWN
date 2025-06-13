@@ -19,3 +19,7 @@ tokio = { version = "1.45.1", features = ["full"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
 futures-core = "0.3"
+
+[[bin]]
+name = "inspect_log"
+path = "bin/inspect_log.rs"
