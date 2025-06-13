@@ -311,6 +311,53 @@ impl LogStructuredStore {
         Ok(items.into_iter())
     }
 
+    pub fn truncate_after_ptr(&self, ptr: RecordPtr) -> io::Result<()> {
+        // remove sealed segments with id > ptr.seg_id
+        {
+            let mut sealed = self.sealed.write().unwrap();
+            for seg in sealed.iter() {
+                if seg.meta.id > ptr.seg_id {
+                    let _ = fs::remove_file(&seg.meta.log_path);
+                    let _ = fs::remove_file(&seg.meta.ftr_path);
+                }
+            }
+            sealed.retain(|seg| seg.meta.id <= ptr.seg_id);
+        }
+
+        // remove active segment if needed
+        {
+            let mut active = self.active.lock().unwrap();
+            if active.meta.id > ptr.seg_id {
+                let _ = fs::remove_file(&active.meta.log_path);
+                let _ = fs::remove_file(&active.meta.ftr_path);
+                // TODO: set active to None
+            }
+        }
+
+        // truncate the segment at ptr.seg_id to ptr.offset
+        let seg_path = self.dir.join(format!("{:016X}.log", ptr.seg_id));
+        let file = fs::OpenOptions::new().write(true).open(&seg_path)?;
+        file.set_len(ptr.offset as u64)?;
+
+        // rebuild the footer for the truncated segment
+        let meta = SegmentInfo::new(&self.dir, ptr.seg_id);
+        rebuild_footer(&meta)?;
+
+        // update sealed list: remove all segments with id >= ptr.seg_id, and refresh the reader for ptr.seg_id
+        {
+            let mut sealed = self.sealed.write().unwrap();
+            sealed.retain(|seg| seg.meta.id < ptr.seg_id);
+        }
+
+        // reopen the segment at ptr.seg_id as active writer
+        {
+            let mut active = self.active.lock().unwrap();
+            *active = SegmentWriter::open(&self.dir, ptr.seg_id, self.max_seg_size)?;
+        }
+
+        Ok(())
+    }
+
     fn scan_between_ptr_with_filter<F>(
         &self, 
         start_ptr: RecordPtr, 
