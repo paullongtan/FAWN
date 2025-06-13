@@ -121,10 +121,8 @@ impl BackendHandler {
                 Ok(true) // delivered & ACKed
             }, 
             false => {
-                Err(Box::new(FawnError::RpcError("transport failure".into())))
-                // // TODO: replay instead of returning error
-                // self.replay_unacked_ops().await?; // retry unacked ops
-                // // set a time out for retrying
+                self.replay_unacked_ops().await?; // retry unacked ops (it will retry until success)
+                Ok(true) // reutrn true only if replay is successful
             }
         }
     }
@@ -366,6 +364,7 @@ impl BackendHandler {
             }
         }
 
+        // return ok only after all unacked operations are replayed
         Ok(())
     }
 

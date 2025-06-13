@@ -273,19 +273,22 @@ impl LogStructuredStore {
             } else if lo > hi {
                 h > lo || h <= hi
             } else {
-                false // lo == hi, no valid range
+                true // if lo == hi, include all (includes everything)
             }
         };
 
         // scan the active segment first
         for (h, off) in active_seg.footer_pairs() {
             if !in_range(h) { continue; }
-            if seen.contains(&h) { continue; } // skip if already seen
+            if seen.contains(&h) { continue; } // skip if already seen (currently, we consider no hash collision)
+
             let buf = active_seg.read_record_bytes(off)?;
             let rec = super::record::Record::decode(&mut &buf[..])?;
             if rec.flags == super::record::RecordFlags::Put {
-                seen.insert(rec.hash32);
+                seen.insert(rec.hash32); // mark as seen
                 items.push((rec.hash32, rec.value.to_vec()));
+            } else if rec.flags == super::record::RecordFlags::Delete {
+                seen.insert(rec.hash32); // mark as seen to avoid including old PUT record
             }
         }
 
@@ -293,16 +296,66 @@ impl LogStructuredStore {
         for seg in self.sealed.read().unwrap().iter() {
             for (h, off) in seg.footer_pairs() {
                 if !in_range(h) { continue; }
-                if seen.contains(&h) { continue; } // skip if already seen
+                if seen.contains(&h) { continue; } // skip if already seen (currently, we consider no hash collision)
+
                 let buf = seg.read_record_bytes(off)?;
                 let rec = super::record::Record::decode(&mut &buf[..])?;
                 if rec.flags == super::record::RecordFlags::Put {
                     items.push((rec.hash32, rec.value.to_vec()));
+                } else if rec.flags == super::record::RecordFlags::Delete {
+                    seen.insert(rec.hash32); // mark as seen to avoid including old PUT record
                 }
             }
         }
 
         Ok(items.into_iter())
+    }
+
+    pub fn truncate_after_ptr(&self, ptr: RecordPtr) -> io::Result<()> {
+        // remove sealed segments with id > ptr.seg_id
+        {
+            let mut sealed = self.sealed.write().unwrap();
+            for seg in sealed.iter() {
+                if seg.meta.id > ptr.seg_id {
+                    let _ = fs::remove_file(&seg.meta.log_path);
+                    let _ = fs::remove_file(&seg.meta.ftr_path);
+                }
+            }
+            sealed.retain(|seg| seg.meta.id <= ptr.seg_id);
+        }
+
+        // remove active segment if needed
+        {
+            let mut active = self.active.lock().unwrap();
+            if active.meta.id > ptr.seg_id {
+                let _ = fs::remove_file(&active.meta.log_path);
+                let _ = fs::remove_file(&active.meta.ftr_path);
+                // TODO: set active to None
+            }
+        }
+
+        // truncate the segment at ptr.seg_id to ptr.offset
+        let seg_path = self.dir.join(format!("{:016X}.log", ptr.seg_id));
+        let file = fs::OpenOptions::new().write(true).open(&seg_path)?;
+        file.set_len(ptr.offset as u64)?;
+
+        // rebuild the footer for the truncated segment
+        let meta = SegmentInfo::new(&self.dir, ptr.seg_id);
+        rebuild_footer(&meta)?;
+
+        // update sealed list: remove all segments with id >= ptr.seg_id, and refresh the reader for ptr.seg_id
+        {
+            let mut sealed = self.sealed.write().unwrap();
+            sealed.retain(|seg| seg.meta.id < ptr.seg_id);
+        }
+
+        // reopen the segment at ptr.seg_id as active writer
+        {
+            let mut active = self.active.lock().unwrap();
+            *active = SegmentWriter::open(&self.dir, ptr.seg_id, self.max_seg_size)?;
+        }
+
+        Ok(())
     }
 
     fn scan_between_ptr_with_filter<F>(
