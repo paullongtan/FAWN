@@ -1,16 +1,25 @@
 use fawn_backend::meta::Meta;
 use server::BackendServer;
 use storage::logstore::LogStructuredStore;
+use stage::Stage;
+use std::path::Path;
 use fawn_common::err::{FawnError, FawnResult};
 use fawn_common::config::BackConfig;
+use env_logger::Env;
 
 mod storage;
 mod server;
 mod rpc_handler;
 mod service;
 mod meta;
+mod stage;
 
 fn main() -> FawnResult<()> {
+    // Initialize the logger
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+    
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
         eprintln!("Usage: {} <config_file>", args[0]);
@@ -39,16 +48,15 @@ fn main() -> FawnResult<()> {
     let mut server = BackendServer::new(
         config.fronts, 
         config.address, 
+        stage_meta_path,
+        primary_storage,
+        primary_meta_path,
+        temp_storage,
+        temp_meta_path,
     ).map_err(|e| FawnError::SystemError(format!("Failed to create backend server: {}", e)))?;
 
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        server.start(
-            primary_storage, 
-            primary_meta_path, 
-            temp_storage, 
-            temp_meta_path,
-            stage_meta_path
-        ).await?;
+        server.start().await?;
         Ok(())
     })
 }

@@ -32,7 +32,6 @@ impl FawnBackendService for BackendService {
         &self,
         request: tonic::Request<PingRequest>,
     ) -> std::result::Result<tonic::Response<PingResponse>, tonic::Status>{
-        let _self_info = self.handler.handle_ping().map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(PingResponse {}))
     }
 
@@ -159,7 +158,7 @@ impl FawnBackendService for BackendService {
             .map(fawn_common::types::NodeInfo::from)
             .ok_or_else(|| Status::invalid_argument("new_node is required"))?;
 
-        self.handler.handle_trigger_flush(&new_node_info).await
+        self.handler.handle_trigger_flush(&new_node_info, msg.start_id, msg.end_id).await
             .map_err(|e| Status::internal(e.to_string()))?;
 
         Ok(Response::new(TriggerFlushResponse {}))

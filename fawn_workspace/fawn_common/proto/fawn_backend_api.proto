@@ -76,6 +76,8 @@ message UpdateChainMemberResponse {
 
 message TriggerFlushRequest {
     NodeInfo new_node = 1;
+    uint32 start_id = 2;
+    uint32 end_id = 3;
 }
 
 message TriggerFlushResponse {

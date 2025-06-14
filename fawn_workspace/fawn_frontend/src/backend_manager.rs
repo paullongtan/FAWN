@@ -120,68 +120,60 @@ impl BackendManager {
     pub async fn get_updated_chain(
         &self,
         new_node: NodeInfo,
-    ) -> Vec<(Vec<NodeInfo>, NodeInfo, NodeInfo)> {
+    ) -> Vec<(Vec<NodeInfo>, Option<NodeInfo>, NodeInfo)> {
         let backends = self.active_backends.read().await;
         if backends.is_empty() {
-            // If the ring is empty, the new node forms a chain by itself.
-            // There's no old tail to migrate data from, so no updates are returned.
-            return vec![];
+            // The first node forms a chain by itself. There is no predecessor and no data source.
+            return vec![(vec![new_node.clone()], None, new_node)];
         }
 
         let pos = match backends.binary_search_by_key(&new_node.id, |b| b.id) {
-            Ok(_) => return vec![], // Node already exists, no changes needed.
+            Ok(_) => return vec![], // Node already exists
             Err(pos) => pos,
         };
 
-        // Create a new representation of the ring with the new node included.
         let mut new_backends = backends.clone();
         new_backends.insert(pos, new_node.clone());
 
         let new_len = new_backends.len();
         let chain_size = cmp::min(self.replication_count, new_len);
-        let original_chain_size = cmp::min(self.replication_count, backends.len());
+        let mut result = Vec::new();
+        let mut affected_heads = std::collections::HashSet::new();
 
-        let mut result = Vec::with_capacity(chain_size);
-
-        // The introduction of a new node affects `chain_size` chains.
-        // We iterate through them to determine their new members and the old tail for data migration.
         for i in 0..chain_size {
-            // The heads of the affected chains are the new node and its `chain_size - 1` predecessors.
             let head_pos_new = (pos + new_len - i) % new_len;
+            let head_node_new = &new_backends[head_pos_new];
 
-            // Construct the new chain.
-            let mut chain = Vec::with_capacity(chain_size);
-            for j in 0..chain_size {
-                let idx = (head_pos_new + j) % new_len;
-                chain.push(new_backends[idx].clone());
-            }
+            if affected_heads.insert(head_node_new.id) {
+                let mut new_chain = Vec::with_capacity(chain_size);
+                for j in 0..chain_size {
+                    new_chain.push(new_backends[(head_pos_new + j) % new_len].clone());
+                }
 
-            // For each new chain, we identify the tail of its corresponding old chain.
-            // This 'old tail' holds the data that needs to be migrated to new members.
-            let old_tail = if i == 0 {
-                // This case handles the chain for which `new_node` is the new head.
-                // Its key range was previously managed by the chain starting at `new_node`'s successor.
-                // The head of that old chain is `backends[pos]`. We get data from its tail.
-                let old_head_pos = pos % backends.len();
-                let old_tail_pos = (old_head_pos + original_chain_size - 1) % backends.len();
-                backends[old_tail_pos].clone()
-            } else {
-                // These are existing chains that `new_node` is joining. The head remains the same.
-                // We find the head in the old `backends` list to identify the old chain's tail.
-                let head_node = &chain[0];
+                let old_head_node = if head_node_new.id == new_node.id {
+                    // This is the chain for which the new node is the head.
+                    // The old chain was headed by the new node's successor.
+                    &backends[pos % backends.len()]
+                } else {
+                    // This is a chain that the new node is joining.
+                    // The head is an existing node.
+                    head_node_new
+                };
+
                 let old_head_pos = backends
-                    .binary_search_by_key(&head_node.id, |b| b.id)
-                    .expect("Chain head must have existed in the old backend list");
+                    .binary_search_by_key(&old_head_node.id, |b| b.id)
+                    .unwrap_or_else(|p| p % backends.len());
+
+                let original_chain_size = cmp::min(self.replication_count, backends.len());
                 let old_tail_pos = (old_head_pos + original_chain_size - 1) % backends.len();
-                backends[old_tail_pos].clone()
-            };
+                let old_tail = backends[old_tail_pos].clone();
 
-            let predecessor_pos = (head_pos_new + new_len - 1) % new_len;
-            let predecessor = new_backends[predecessor_pos].clone();
+                let predecessor_of_head =
+                    new_backends[(head_pos_new + new_len - 1) % new_len].clone();
 
-            result.push((chain, old_tail, predecessor));
+                result.push((new_chain, Some(old_tail), predecessor_of_head));
+            }
         }
-
         result
     }
 

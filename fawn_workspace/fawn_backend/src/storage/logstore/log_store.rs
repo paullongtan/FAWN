@@ -11,6 +11,7 @@ use std::{
     fs, io::{self, Write}, os::unix::fs::FileExt, path::PathBuf, sync::{Mutex, RwLock}, time::{Duration, Instant}
 };
 use std::collections::HashSet;
+use log;
 
 const FLUSH_EVERY: Duration = Duration::from_secs(5); // flush every 5 seconds
 const MAX_SEG_SIZE: u32 = 4 * 1024 * 1024; // 4 MiB max segment size
@@ -368,28 +369,46 @@ impl LogStructuredStore {
         F: Fn(u32) -> bool, 
     {
         let mut results = Vec::new();
+        log::info!("Starting scan between ptrs: start={:?}, end={:?}", start_ptr, end_ptr);
 
         // sealed segments: reverse order (oldest to newest)
         let sealed = self.sealed.read().unwrap();
+        log::info!("Got sealed segments lock, found {} segments", sealed.len());
 
         // scan sealed segments from oldest to newest
-        for seg in sealed.iter().rev() {
+        for (i, seg) in sealed.iter().rev().enumerate() {
             if seg.meta.id < start_ptr.seg_id {
+                log::info!("Skipping segment {} as it's before start_ptr", seg.meta.id);
                 continue;
             }
+            log::info!("Scanning sealed segment {} ({}/{})", seg.meta.id, i+1, sealed.len());
             scan_segment_between_ptr(seg, start_ptr, end_ptr, &mut results, &filter)?;
         }
 
         // scan active segment
         // flush footer and clone meta of active segment
+        log::info!("Preparing to scan active segment");
         let meta = {
             let mut w = self.active.lock().unwrap();
+            log::info!("Got active segment lock");
+
+            // If the active segment is empty, there's nothing to scan.
+            if w.bytes_written() == 0 {
+                log::info!("Active segment is empty, skipping scan.");
+                log::info!("Scan complete, found {} records", results.len());
+                return Ok(results);
+            }
+
             w.flush_footer()?;
+            log::info!("Flushed footer of active segment");
             w.meta.clone()
         };
+        log::info!("Opening active segment reader");
         let active_reader = super::segment::SegmentReader::open(meta)?;
+        log::info!("Scanning active segment");
         scan_segment_between_ptr(&active_reader, start_ptr, end_ptr, &mut results, &filter)?;
         
+        log::info!("Scan complete, found {} records", results.len());
         Ok(results)
     }
 
@@ -554,38 +573,49 @@ where
     Ok(())
 }
 
-fn scan_segment_between_ptr<F>(
+fn scan_segment_between_ptr(
     seg: &SegmentReader,
     start_ptr: RecordPtr,
     end_ptr: RecordPtr,
     results: &mut Vec<(RecordPtr, RecordFlags, u32, Vec<u8>)>,
-    in_range: F,
-) -> io::Result<()>
-where
-    F: Fn(u32) -> bool,
-{
-    let seg_id = seg.meta.id;
-    for (_hash, offset) in seg.footer_pairs() {
-        if seg_id == start_ptr.seg_id && offset < start_ptr.offset {
-            continue;
-        } else if seg_id == end_ptr.seg_id && offset > end_ptr.offset {
-            continue; // skip if beyond the end pointer
+    filter: &impl Fn(u32) -> bool,
+) -> io::Result<()> {
+    log::info!("Starting scan of segment {} between ptrs: start={:?}, end={:?}", seg.meta.id, start_ptr, end_ptr);
+    
+    // get all records in this segment
+    let mut offset: u32 = 0;
+    while offset < seg.log_len()? as u32 {
+        let ptr = RecordPtr {
+            seg_id: seg.meta.id,
+            offset,
+        };
+        
+        // stop if we've reached the end pointer
+        if ptr >= end_ptr {
+            log::info!("Reached end pointer in segment {}", seg.meta.id);
+            break;
         }
-
+        
+        // skip if before start pointer
+        if ptr < start_ptr {
+            log::info!("Skipping record at offset {} in segment {} as it's before start_ptr", offset, seg.meta.id);
+            offset += 1;
+            continue;
+        }
+        
+        // read the record
         let buf = seg.read_record_bytes(offset)?;
         let rec = super::record::Record::decode(&mut &buf[..])?;
-
-        if !in_range(rec.hash32) {
-            continue;
+        
+        // apply the filter
+        if filter(rec.hash32) {
+            results.push((ptr, rec.flags, rec.hash32, rec.value.to_vec()));
         }
-
-        results.push((
-            RecordPtr { seg_id, offset },
-            rec.flags,
-            rec.hash32,
-            rec.value.to_vec(),
-        ));
+        
+        offset += buf.len() as u32;
     }
+    
+    log::info!("Finished scanning segment {}, found {} records", seg.meta.id, results.len());
     Ok(())
 }
 

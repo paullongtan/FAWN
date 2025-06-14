@@ -76,6 +76,10 @@ pub struct UpdateChainMemberResponse {}
 pub struct TriggerFlushRequest {
     #[prost(message, optional, tag = "1")]
     pub new_node: ::core::option::Option<NodeInfo>,
+    #[prost(uint32, tag = "2")]
+    pub start_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub end_id: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
