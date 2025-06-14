@@ -202,10 +202,10 @@ impl BackendServer {
             println!("Completed data migration from {}", src_info.get_http_addr());
         }
         
-        // change the stage from temp to normal
-        println!("Switching stage from TempMember to Normal");
-        handler.switch_stage(crate::stage::Stage::Normal).await
-            .map_err(|e| FawnError::SystemError(format!("Failed to switch stage to Normal: {}", e)))?;
+        // change the stage from Normal to TempMember
+        println!("Switching stage from Normal to TempMember");
+        handler.switch_stage(crate::stage::Stage::TempMember).await
+            .map_err(|e| FawnError::SystemError(format!("Failed to switch stage to TempMember: {}", e)))?;
 
         println!("Finalizing join ring");
         let request = FinalizeJoinRingRequest {
@@ -216,6 +216,11 @@ impl BackendServer {
         let response = front_client.finalize_join_ring(request).await
             .map_err(|e| FawnError::RpcError(format!("Failed to finalize join ring: {}", e)))?;
         let response = response.into_inner();
+
+        // change the stage from temp to normal
+        println!("Switching stage from TempMember to Normal");
+        handler.switch_stage(crate::stage::Stage::Normal).await
+            .map_err(|e| FawnError::SystemError(format!("Failed to switch stage to Normal: {}", e)))?;
         
         println!("Successfully joined the ring");
 
