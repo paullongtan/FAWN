@@ -48,7 +48,7 @@ impl BackendManager {
             Err(pos) => {
                 if pos >= backends.len() {
                     // Wrap around to the first node
-                    backends.first().cloned()
+                    Some(backends[0].clone())
                 } else {
                     Some(backends[pos].clone())
                 }
@@ -80,7 +80,7 @@ impl BackendManager {
 
         if pos >= backends.len() {
             // Wrap around to the last node
-            backends.last().cloned()
+            Some(backends[backends.len() - 1].clone())
         } else {
             Some(backends[pos].clone())
         }
